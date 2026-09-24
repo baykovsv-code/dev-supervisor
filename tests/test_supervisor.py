@@ -4160,5 +4160,83 @@ class ColdStartTests(unittest.TestCase):
         self.assertFalse((self.root / self.policy["implementation_plan"]).exists())
 
 
+class ExistingProjectAdmissionTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        git(self.root, "init", "-b", "main")
+        git(self.root, "config", "user.name", "Admission Test")
+        git(self.root, "config", "user.email", "admission@example.invalid")
+        (self.root / "src").mkdir()
+        (self.root / "docs").mkdir()
+        (self.root / "src" / "main.py").write_text("print('hello')\n", encoding="utf-8")
+        self.document = self.root / "docs" / "external-architecture.md"
+        self.document.write_text("# Reviewed external architecture\n", encoding="utf-8")
+        (self.root / "pyproject.toml").write_text("[project]\nname = 'fixture'\n", encoding="utf-8")
+        git(self.root, "add", ".")
+        git(self.root, "commit", "-m", "Seed existing repository")
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def manifest(self):
+        digest = supervisor_module._admission_digest(self.document)
+        path = self.root / "mapping.json"
+        path.write_text(json.dumps({
+            "version": 1,
+            "source_documents": [{"path": "docs/external-architecture.md", "external_id": "EXT-ARCH-1", "digest": digest}],
+            "external_identifiers": ["EXT-ARCH-1"],
+            "mapping": {"status": "compatible", "covered_requirements": ["EXT-ARCH-1"], "gaps": [], "contradictions": [], "unknowns": []},
+        }), encoding="utf-8")
+        return path
+
+    def test_scenario_a_inventory_is_read_only_and_returns_finite_external_checklist(self):
+        before = git(self.root, "status", "--porcelain=v1", "--untracked-files=all")
+        finding = supervisor_module.assess_existing_project(self.root, "A")
+        self.assertEqual(finding["status"], "incompatible")
+        self.assertEqual(len(finding["gaps"]), 3)
+        self.assertIn("Python", finding["inventory"]["languages"])
+        self.assertIn("src/main.py", finding["inventory"]["entry_points"])
+        self.assertEqual(git(self.root, "status", "--porcelain=v1", "--untracked-files=all"), before)
+        self.assertFalse((self.root / ".dev-supervisor").exists())
+
+    def test_both_scenarios_produce_deterministic_approved_indexes(self):
+        manifest = self.manifest()
+        for scenario in ("A", "B"):
+            review = supervisor_module.AdmissionReview(self.root)
+            state = review.begin(scenario, manifest)
+            self.assertIsNone(state["approval"])
+            review.approve(state["assessment_digest"], state["manifest_digest"])
+            destination = f"admission-{scenario}.json"
+            review.materialize_index(destination)
+            index = json.loads((self.root / destination).read_text(encoding="utf-8"))
+            self.assertEqual(index["scenario"], scenario)
+            self.assertEqual(index["source_documents"][0]["external_id"], "EXT-ARCH-1")
+            self.assertEqual(index["mapping"]["status"], "compatible")
+            self.assertEqual(
+                supervisor_module.content_checksum(index),
+                supervisor_module.content_checksum(json.loads((self.root / destination).read_text(encoding="utf-8"))),
+            )
+            (self.root / ".dev-supervisor" / "admission.json").unlink()
+
+    def test_changed_source_and_existing_control_both_fail_closed(self):
+        manifest = self.manifest()
+        review = supervisor_module.AdmissionReview(self.root)
+        state = review.begin("B", manifest)
+        self.document.write_text("changed\n", encoding="utf-8")
+        with self.assertRaisesRegex(SupervisorError, "finite source-document gaps"):
+            review.approve(state["assessment_digest"], state["manifest_digest"])
+        controlled = Path(tempfile.mkdtemp(dir=self.temporary.name))
+        git(controlled, "init", "-b", "main")
+        git(controlled, "config", "user.name", "Admission Test")
+        git(controlled, "config", "user.email", "admission@example.invalid")
+        (controlled / "dev-supervisor.json").write_text("{}\n", encoding="utf-8")
+        git(controlled, "add", ".")
+        git(controlled, "commit", "-m", "Controlled")
+        finding = supervisor_module.assess_existing_project(controlled, "A")
+        self.assertIn("already has Supervisor control", finding["gaps"][0])
+        self.assertFalse((controlled / ".dev-supervisor").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

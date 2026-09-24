@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Existing-project admission manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "source_documents", "external_identifiers", "mapping"],
+  "properties": {
+    "version": {"const": 1},
+    "source_documents": {
+      "type": "array", "minItems": 1,
+      "items": {"type": "object", "additionalProperties": false, "required": ["path", "external_id", "digest"], "properties": {
+        "path": {"type": "string", "pattern": ".+"},
+        "external_id": {"type": "string", "pattern": ".+"},
+        "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }}
+    },
+    "external_identifiers": {"type": "array", "items": {"type": "string", "pattern": ".+"}},
+    "mapping": {"type": "object", "additionalProperties": false, "required": ["status", "covered_requirements", "gaps", "contradictions", "unknowns"], "properties": {
+      "status": {"enum": ["compatible", "conditionally_compatible", "incompatible"]},
+      "covered_requirements": {"type": "array", "items": {"type": "string", "pattern": ".+"}},
+      "gaps": {"type": "array", "items": {"type": "string", "pattern": ".+"}},
+      "contradictions": {"type": "array", "items": {"type": "string", "pattern": ".+"}},
+      "unknowns": {"type": "array", "items": {"type": "string", "pattern": ".+"}}
+    }}
+  }
+}

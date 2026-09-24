@@ -73,6 +73,13 @@ STATE_PREDECESSORS_DIRECTORY = "state-predecessors"
 COLD_START_STATE_NAME = "cold-start.json"
 COLD_START_DIRECTORY = "cold-start"
 COLD_START_PHASES = {"REQUIREMENTS_REVIEW", "ARCHITECTURE_REVIEW", "PLAN_READY"}
+ADMISSION_STATE_NAME = "admission.json"
+ADMISSION_DIRECTORY = "admission"
+ADMISSION_SCENARIOS = {"A", "B"}
+ADMISSION_STATUSES = {"compatible", "conditionally_compatible", "incompatible"}
+ADMISSION_DOCUMENT_FIELDS = {"path", "external_id", "digest"}
+ADMISSION_MANIFEST_FIELDS = {"version", "source_documents", "external_identifiers", "mapping"}
+ADMISSION_MAPPING_FIELDS = {"status", "covered_requirements", "gaps", "contradictions", "unknowns"}
 QUOTA_STATES = {"QUOTA_CHECK_REQUIRED", "QUOTA_LOW", "QUOTA_EXHAUSTED"}
 RATE_LIMIT_MARKERS = (
     "rate limit", "rate_limit", "usage limit", "usage_limit", "quota exhausted",
@@ -805,6 +812,278 @@ class GitRepo:
     def cached_files(self) -> list[str]:
         raw = self.run("diff", "--cached", "--name-only", "-z").stdout
         return sorted(path for path in raw.split("\0") if path)
+
+
+def _admission_relative_path(root: Path, value: str) -> Path:
+    candidate = Path(value)
+    if not value or candidate.is_absolute() or ".." in candidate.parts:
+        raise SupervisorError("admission document paths must be nonempty safe repository-relative paths")
+    resolved = (root / candidate).resolve()
+    if root not in resolved.parents and resolved != root:
+        raise SupervisorError("admission document path escapes the repository")
+    return resolved
+
+
+def _admission_digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def shallow_inventory(root: Path) -> dict[str, Any]:
+    """Collect bounded observable facts without writing the assessed repository."""
+    root = root.expanduser().resolve()
+    git = GitRepo(root)
+    git.require_repository()
+    ignored = {".git", ".dev-supervisor", "node_modules", "__pycache__", ".venv", "venv"}
+    files = sorted(
+        path for path in root.rglob("*")
+        if path.is_file() and not any(part in ignored for part in path.relative_to(root).parts)
+    )
+    extension_languages = {
+        ".py": "Python", ".js": "JavaScript", ".ts": "TypeScript", ".tsx": "TypeScript",
+        ".jsx": "JavaScript", ".go": "Go", ".rs": "Rust", ".java": "Java",
+        ".kt": "Kotlin", ".rb": "Ruby", ".php": "PHP", ".cs": "C#",
+        ".c": "C", ".h": "C/C++", ".cc": "C++", ".cpp": "C++", ".swift": "Swift",
+        ".sh": "Shell", ".sql": "SQL",
+    }
+    language_paths: dict[str, list[str]] = {}
+    for path in files:
+        language = extension_languages.get(path.suffix.lower())
+        if language:
+            language_paths.setdefault(language, []).append(path.relative_to(root).as_posix())
+    names = {path.name.lower(): path.relative_to(root).as_posix() for path in files}
+    dependency_names = {
+        "package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "pyproject.toml",
+        "requirements.txt", "poetry.lock", "pipfile", "go.mod", "cargo.toml", "pom.xml", "build.gradle",
+    }
+    build_names = {"makefile", "justfile", "dockerfile", "compose.yml", "docker-compose.yml", "build.gradle", "pom.xml"}
+    test_names = {"pytest.ini", "tox.ini", "jest.config.js", "vitest.config.ts", "conftest.py"}
+    deploy_names = {"dockerfile", "compose.yml", "docker-compose.yml", "helmfile.yaml", "chart.yaml"}
+    document_suffixes = {".md", ".rst", ".txt", ".adoc"}
+    documents = [
+        {"path": path.relative_to(root).as_posix(), "digest": _admission_digest(path)}
+        for path in files if path.suffix.lower() in document_suffixes
+    ]
+    entry_points = [
+        path.relative_to(root).as_posix() for path in files
+        if path.name in {"main.py", "app.py", "manage.py", "server.py", "index.js", "index.ts", "main.go", "main.rs"}
+        or os.access(path, os.X_OK)
+    ]
+    integration_markers = ("terraform", "kubernetes", ".github", "docker", "compose", "openapi", "swagger")
+    integrations = sorted({
+        path.relative_to(root).as_posix().split("/")[0]
+        for path in files if any(marker in path.relative_to(root).as_posix().lower() for marker in integration_markers)
+    })
+    evidence = [
+        {"input": item["path"], "digest": item["digest"]} for item in documents
+    ]
+    evidence.extend({"input": path, "digest": _admission_digest(root / path)} for path in sorted(set(entry_points)))
+    return {
+        "version": 1,
+        "kind": "shallow_inventory",
+        "repository": str(root),
+        "git": {"head": git.head(), "branch": git.branch(), "status": git.status_entries()},
+        "languages": {name: paths for name, paths in sorted(language_paths.items())},
+        "entry_points": sorted(set(entry_points)),
+        "dependencies": sorted(path for name, path in names.items() if name in dependency_names),
+        "surfaces": {
+            "build": sorted(path for name, path in names.items() if name in build_names),
+            "test": sorted(path for name, path in names.items() if name in test_names or "test" in name),
+            "deploy": sorted(path for name, path in names.items() if name in deploy_names),
+        },
+        "components": sorted({path.relative_to(root).parts[0] for path in files if len(path.relative_to(root).parts) > 1}),
+        "integrations": integrations,
+        "documents": documents,
+        "risks": ["Inventory is shallow and does not establish product architecture or intent."],
+        "unknowns": [
+            "Runtime behavior, ownership, authority, and undocumented integrations are not inferred from inventory.",
+            "Dependency semantics and component boundaries require project-owned evidence.",
+        ],
+        "evidence": sorted(evidence, key=lambda item: item["input"]),
+        "inferences": ["Languages and surfaces are inferred solely from file names and extensions."],
+    }
+
+
+def _validate_admission_manifest(root: Path, value: Any) -> tuple[dict[str, Any], list[str]]:
+    if not isinstance(value, dict) or set(value) != ADMISSION_MANIFEST_FIELDS or value.get("version") != 1:
+        raise SupervisorError("admission manifest has an unsupported version or keys")
+    documents = value.get("source_documents")
+    identifiers = value.get("external_identifiers")
+    mapping = value.get("mapping")
+    if not isinstance(documents, list) or not documents:
+        raise SupervisorError("admission manifest requires a finite nonempty source_documents list")
+    if not isinstance(identifiers, list) or any(not isinstance(item, str) or not item.strip() for item in identifiers):
+        raise SupervisorError("admission manifest external_identifiers must be an array of nonempty strings")
+    if not isinstance(mapping, dict) or set(mapping) != ADMISSION_MAPPING_FIELDS or mapping.get("status") not in ADMISSION_STATUSES:
+        raise SupervisorError("admission manifest mapping has unsupported keys or status")
+    for field in ADMISSION_MAPPING_FIELDS - {"status"}:
+        if not isinstance(mapping[field], list) or any(not isinstance(item, str) or not item.strip() for item in mapping[field]):
+            raise SupervisorError(f"admission manifest mapping {field!r} must be an array of nonempty strings")
+    seen_paths: set[str] = set()
+    seen_ids: set[str] = set()
+    gaps: list[str] = list(mapping["gaps"]) + list(mapping["contradictions"]) + list(mapping["unknowns"])
+    for document in documents:
+        if not isinstance(document, dict) or set(document) != ADMISSION_DOCUMENT_FIELDS:
+            raise SupervisorError("each admission source document must contain only path, external_id, and digest")
+        path, external_id, digest = document.get("path"), document.get("external_id"), document.get("digest")
+        if not isinstance(path, str) or not isinstance(external_id, str) or not external_id.strip() or not isinstance(digest, str):
+            raise SupervisorError("admission source document provenance is malformed")
+        if path in seen_paths or external_id in seen_ids:
+            raise SupervisorError("admission source document paths and external identifiers must be unique")
+        seen_paths.add(path)
+        seen_ids.add(external_id)
+        candidate = _admission_relative_path(root, path)
+        if not candidate.is_file():
+            gaps.append(f"missing source document: {path}")
+        elif not re.fullmatch(r"[0-9a-f]{64}", digest) or _admission_digest(candidate) != digest:
+            gaps.append(f"source document changed: {path}")
+    missing_ids = sorted(seen_ids - set(identifiers))
+    if missing_ids:
+        gaps.extend(f"unlisted external identifier: {item}" for item in missing_ids)
+    return deepcopy(value), sorted(set(gaps))
+
+
+def assess_existing_project(root: Path, scenario: str, manifest_path: Path | None = None) -> dict[str, Any]:
+    """Return a deterministic read-only admission finding for scenarios A and B."""
+    if scenario not in ADMISSION_SCENARIOS:
+        raise SupervisorError("admission scenario must be A or B")
+    root = root.expanduser().resolve()
+    inventory = shallow_inventory(root)
+    controlled = (root / PROJECT_POLICY_NAME).exists() or (root / "dev").exists()
+    if controlled:
+        return {
+            "version": 1, "scenario": scenario, "status": "incompatible", "inventory": inventory,
+            "evidence": inventory["evidence"], "inferences": [],
+            "gaps": ["repository already has Supervisor control material; admission is not entered"],
+            "recommendation": "Use the existing controlled-project status/reconciliation path.",
+        }
+    if scenario == "A":
+        checklist = [
+            "Project owner supplies reviewed requirements and architecture documents with stable identifiers.",
+            "Project owner records authority, unresolved contradictions, and a bounded implementation plan.",
+            "A human approves the exact corrected document digests before any Supervisor-compatible index is materialized.",
+        ]
+        return {
+            "version": 1, "scenario": "A", "status": "incompatible", "inventory": inventory,
+            "evidence": inventory["evidence"], "inferences": inventory["inferences"], "gaps": checklist,
+            "recommendation": "Perform an independent external architecture stage; Supervisor will not reconstruct AS-IS architecture.",
+        }
+    if manifest_path is None:
+        gaps = ["missing authority: a project-owned foreign-document mapping manifest is required"]
+        return {
+            "version": 1, "scenario": "B", "status": "incompatible", "inventory": inventory,
+            "evidence": inventory["evidence"], "inferences": inventory["inferences"], "gaps": gaps,
+            "recommendation": "Provide corrected project-owned documents and an explicit generic provenance/mapping manifest.",
+        }
+    manifest = read_json(manifest_path.expanduser().resolve())
+    manifest, gaps = _validate_admission_manifest(root, manifest)
+    status = manifest["mapping"]["status"]
+    if gaps:
+        status = "incompatible"
+    return {
+        "version": 1, "scenario": "B", "status": status, "inventory": inventory,
+        "manifest": manifest, "manifest_digest": content_checksum(manifest),
+        "evidence": inventory["evidence"] + [
+            {"input": document["path"], "digest": document["digest"]}
+            for document in manifest["source_documents"]
+        ],
+        "inferences": inventory["inferences"], "gaps": gaps,
+        "recommendation": (
+            "Exact approval may permit compatible-index materialization."
+            if status == "compatible" else "Resolve the finite project-owned mapping gaps before approval."
+        ),
+    }
+
+
+class AdmissionReview:
+    """Persist only approval/provenance records; inventory itself remains read-only."""
+
+    def __init__(self, root: Path):
+        self.root = root.expanduser().resolve()
+        self.state_path = self.root / ".dev-supervisor" / ADMISSION_STATE_NAME
+
+    def _load(self) -> dict[str, Any]:
+        state = read_json(self.state_path)
+        required = {"version", "scenario", "assessment", "assessment_digest", "manifest", "manifest_digest", "approval", "index"}
+        if set(state) != required or state.get("version") != 1 or state.get("scenario") not in ADMISSION_SCENARIOS:
+            raise SupervisorError("admission review state is malformed or has an unsupported version")
+        if content_checksum(state["assessment"]) != state.get("assessment_digest"):
+            raise SupervisorError("admission assessment provenance does not match its recorded digest")
+        if content_checksum(state["manifest"]) != state.get("manifest_digest"):
+            raise SupervisorError("admission manifest provenance does not match its recorded digest")
+        _manifest, gaps = _validate_admission_manifest(self.root, state["manifest"])
+        if state["approval"] is not None:
+            if not isinstance(state["approval"], dict) or set(state["approval"]) != {"assessment_digest", "manifest_digest"}:
+                raise SupervisorError("admission approval is malformed")
+            if state["approval"] != {"assessment_digest": state["assessment_digest"], "manifest_digest": state["manifest_digest"]}:
+                raise SupervisorError("admission approval does not name the exact reviewed inputs")
+            if gaps:
+                raise SupervisorError("approved admission inputs changed or have unresolved finite gaps")
+        if state["index"] is not None and state["approval"] is None:
+            raise SupervisorError("admission index exists without exact approval")
+        return state
+
+    def begin(self, scenario: str, manifest_path: Path) -> dict[str, Any]:
+        if self.state_path.exists():
+            raise SupervisorError("an admission review already exists; resume or discard it outside Supervisor")
+        # Scenario A's initial assessment deliberately has no foreign documents to
+        # interpret.  Once its external stage is complete, it uses the same generic
+        # provenance revalidation as B; this remains an index, not an architecture
+        # reconstruction.
+        finding = assess_existing_project(self.root, "B" if scenario == "A" else scenario, manifest_path)
+        finding["scenario"] = scenario
+        if finding["status"] != "compatible":
+            raise SupervisorError("admission cannot begin until the mapping is compatible with no finite gaps")
+        manifest = finding["manifest"]
+        state = {
+            "version": 1, "scenario": scenario, "assessment": finding,
+            "assessment_digest": content_checksum(finding), "manifest": manifest,
+            "manifest_digest": content_checksum(manifest), "approval": None, "index": None,
+        }
+        atomic_write_json(self.state_path, state)
+        return state
+
+    def approve(self, assessment_digest: str, manifest_digest: str) -> dict[str, Any]:
+        state = self._load()
+        if assessment_digest != state["assessment_digest"] or manifest_digest != state["manifest_digest"]:
+            raise SupervisorError("admission approval must name the exact assessment and manifest digests")
+        _manifest, gaps = _validate_admission_manifest(self.root, state["manifest"])
+        if gaps:
+            raise SupervisorError("admission approval fails closed until all finite source-document gaps are corrected")
+        state["approval"] = {"assessment_digest": assessment_digest, "manifest_digest": manifest_digest}
+        atomic_write_json(self.state_path, state)
+        return state
+
+    def materialize_index(self, destination: str) -> dict[str, Any]:
+        state = self._load()
+        if state["approval"] is None:
+            raise SupervisorError("a Supervisor-compatible index requires exact approval")
+        if state["index"] is not None:
+            raise SupervisorError("a Supervisor-compatible index has already been materialized")
+        target = _admission_relative_path(self.root, destination)
+        if target.exists():
+            raise SupervisorError("refusing to overwrite an existing Supervisor-compatible index")
+        manifest, gaps = _validate_admission_manifest(self.root, state["manifest"])
+        if gaps or manifest["mapping"]["status"] != "compatible":
+            raise SupervisorError("index materialization fails closed until the exact compatible inputs revalidate")
+        index = {
+            "version": 1, "kind": "supervisor_compatible_admission_index",
+            "scenario": state["scenario"], "assessment_digest": state["assessment_digest"],
+            "manifest_digest": state["manifest_digest"],
+            "source_documents": manifest["source_documents"],
+            "external_identifiers": manifest["external_identifiers"], "mapping": manifest["mapping"],
+        }
+        atomic_write_json(target, index)
+        state["index"] = {"path": destination, "digest": _admission_digest(target)}
+        atomic_write_json(self.state_path, state)
+        return state
+
+    def status(self) -> dict[str, Any]:
+        state = self._load()
+        return {**state, "required_human_action": (
+            "approve the exact assessment and manifest digests" if state["approval"] is None
+            else "materialize one Supervisor-compatible index" if state["index"] is None
+            else "review the materialized index before separately initializing any controlled workflow"
+        )}
 
 
 def validate_report(report: Any, role: str, ticket: str) -> list[str]:
@@ -7015,6 +7294,21 @@ def build_parser() -> argparse.ArgumentParser:
     initialize.add_argument("repository", nargs="?", default=".")
     initialize.add_argument("--policy", type=Path)
     initialize.add_argument("--specification", type=Path, help="begin a plan-less cold-start review from this user specification")
+    admission = subparsers.add_parser("admission", help="read-only existing-project assessment and exact-approval indexing")
+    admission.add_argument("--repository", type=Path, default=Path("."))
+    admission_sub = admission.add_subparsers(dest="admission_command", required=True)
+    admission_assess = admission_sub.add_parser("assess", help="perform a shallow read-only scenario A or B inventory")
+    admission_assess.add_argument("--scenario", choices=("A", "B"), required=True)
+    admission_assess.add_argument("--manifest", type=Path)
+    admission_begin = admission_sub.add_parser("begin", help="persist a compatible generic mapping for exact approval")
+    admission_begin.add_argument("--scenario", choices=("A", "B"), required=True)
+    admission_begin.add_argument("--manifest", type=Path, required=True)
+    admission_sub.add_parser("status", help="show exact admission inputs and required human action")
+    admission_approve = admission_sub.add_parser("approve", help="approve exact revalidated assessment and manifest digests")
+    admission_approve.add_argument("--assessment-version", required=True)
+    admission_approve.add_argument("--manifest-version", required=True)
+    admission_index = admission_sub.add_parser("index", help="materialize one approved Supervisor-compatible provenance index")
+    admission_index.add_argument("--destination", required=True)
     migration = subparsers.add_parser(
         "policy-migration-dry-run",
         help="validate a legacy policy and report its in-memory v2 conversion without writing",
@@ -7114,6 +7408,26 @@ def main(arguments: list[str] | None = None) -> int:
                 },
                 "effective_capabilities": converted["capabilities"],
             })
+            return 0
+        except SupervisorError as error:
+            print(f"dev supervisor: {error}", file=sys.stderr)
+            return 2
+    if args.command == "admission":
+        try:
+            root = args.repository.expanduser().resolve()
+            if args.admission_command == "assess":
+                result = assess_existing_project(root, args.scenario, args.manifest)
+            else:
+                review = AdmissionReview(root)
+                if args.admission_command == "begin":
+                    result = review.begin(args.scenario, args.manifest)
+                elif args.admission_command == "status":
+                    result = review.status()
+                elif args.admission_command == "approve":
+                    result = review.approve(args.assessment_version, args.manifest_version)
+                else:
+                    result = review.materialize_index(args.destination)
+            print_json(result)
             return 0
         except SupervisorError as error:
             print(f"dev supervisor: {error}", file=sys.stderr)
