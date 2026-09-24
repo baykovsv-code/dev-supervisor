@@ -50,7 +50,7 @@ CODEX_SUPPORTED_SCHEMA_KEYWORDS = frozenset({
     "exclusiveMaximum", "minItems", "maxItems",
 })
 DEFAULT_SUPERVISOR_CONTROL_PATHS = ("dev", PROJECT_POLICY_NAME)
-POLICY_VERSION = 2
+POLICY_VERSION = 3
 HOST_CAPABILITIES_NAME = "host-capabilities.json"
 CAPABILITY_NAMES = (
     "self_modification",
@@ -112,10 +112,35 @@ def _capability_values(value: Any, *, source: str) -> dict[str, bool]:
     return denied
 
 
+def _observed_quota_policy(legacy: dict[str, Any]) -> dict[str, Any]:
+    """Make the explicit v3 ranges corresponding to a v1/v2 reserve policy."""
+    roles = ("implementation", "architecture", "diagnostic", "supervisor_repair")
+    result: dict[str, Any] = {
+        "provider": "manual", "account_id": "manual-observation",
+        "high_reuse_ttl_minutes": 30, "high_reuse_invocation_count": 1,
+        "roles": {},
+    }
+    for role in roles:
+        reserve = legacy.get(role, {}) if isinstance(legacy, dict) else {}
+        result["roles"][role] = {}
+        for window, old_key in (("five_hour", "five_hour_percent_left"), ("weekly", "weekly_percent_left")):
+            medium = reserve.get(old_key, 100) if isinstance(reserve, dict) else 100
+            if isinstance(medium, bool) or not isinstance(medium, (int, float)) or not math.isfinite(medium):
+                medium = 100
+            medium = max(1, min(99, int(medium)))
+            result["roles"][role][window] = {
+                "low": {"minimum_percent": 0, "maximum_percent": medium - 1},
+                "medium": {"minimum_percent": medium, "maximum_percent": min(99, medium + 29)},
+                "high": {"minimum_percent": min(100, medium + 30), "maximum_percent": 100},
+            }
+    return result
+
+
 def migrate_legacy_policy(policy: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Return an in-memory v2 policy and an explicit, non-writing migration report."""
-    if policy.get("version") != 1:
-        raise SupervisorError("legacy policy migration only supports version 1")
+    """Return an in-memory v3 policy and an explicit, non-writing migration report."""
+    if policy.get("version") not in {1, 2}:
+        raise SupervisorError("legacy policy migration only supports versions 1 and 2")
+    source_version = policy["version"]
     migrated = deepcopy(policy)
     migrated["version"] = POLICY_VERSION
     # Preserve the 1.x absence semantics: only an explicit ``external`` selected
@@ -123,12 +148,11 @@ def migrate_legacy_policy(policy: dict[str, Any]) -> tuple[dict[str, Any], dict[
     migrated.setdefault("supervisor_repair_repository", "embedded")
     migrated["capabilities"] = _capability_values(policy.get("capabilities"), source="legacy project")
     removed: list[str] = []
-    forecast = migrated.get("forecast")
-    if isinstance(forecast, dict) and "fallback_ticket_hours" in forecast:
-        forecast.pop("fallback_ticket_hours")
-        removed.append("forecast.fallback_ticket_hours")
+    migrated.pop("forecast", None)
+    removed.append("forecast")
+    migrated["quota"] = _observed_quota_policy(policy.get("quota", {}))
     return migrated, {
-        "from_version": 1,
+        "from_version": source_version,
         "to_version": POLICY_VERSION,
         "removed_fields": removed,
         "writes_required": True,
@@ -140,7 +164,7 @@ def validate_project_policy(policy: dict[str, Any]) -> tuple[dict[str, Any], dic
     version = policy.get("version")
     if isinstance(version, bool) or not isinstance(version, int):
         raise SupervisorError(f"unsupported project policy version: {version!r}")
-    if version == 1:
+    if version in {1, 2}:
         migrated, migration = migrate_legacy_policy(policy)
         validated, _ = validate_project_policy(migrated)
         return validated, migration
@@ -150,7 +174,7 @@ def validate_project_policy(policy: dict[str, Any]) -> tuple[dict[str, Any], dic
         "version", "expected_branch", "bootstrap_ticket", "initial_completed_tickets",
         "implementation_plan", "authoritative_documents", "supervisor_control_paths",
         "supervisor_repair_repository", "models", "quota", "diagnostic",
-        "periodic_checkpoint", "model_watchdog", "forecast", "milestones",
+        "periodic_checkpoint", "model_watchdog", "milestones",
         "verification_commands", "supervisor_repair_verification_commands",
         "host_verification_capabilities", "ticket_verification_commands",
         "evidence_check_commands", "human_evidence_gates", "implementation_forbidden_paths",
@@ -166,11 +190,6 @@ def validate_project_policy(policy: dict[str, Any]) -> tuple[dict[str, Any], dic
     capabilities = _capability_values(policy["capabilities"], source="project")
     if policy["capabilities"] != capabilities:
         raise SupervisorError("project policy capabilities must explicitly declare every capability")
-    if not isinstance(policy["forecast"], dict) or set(policy["forecast"]) != {"minimum_history_samples"}:
-        raise SupervisorError("project policy forecast must contain only minimum_history_samples")
-    minimum = policy["forecast"]["minimum_history_samples"]
-    if isinstance(minimum, bool) or not isinstance(minimum, int) or minimum < 1:
-        raise SupervisorError("forecast.minimum_history_samples must be a positive integer")
     roles = {"implementation", "architecture", "diagnostic", "supervisor_repair"}
     if not isinstance(policy["models"], dict) or set(policy["models"]) != roles:
         raise SupervisorError("project policy models must declare exactly the supported roles")
@@ -181,20 +200,32 @@ def validate_project_policy(policy: dict[str, Any]) -> tuple[dict[str, Any], dic
         ):
             raise SupervisorError(f"model policy for {role!r} is malformed")
     quota = policy["quota"]
-    if not isinstance(quota, dict) or set(quota) != {"provider", "max_snapshot_age_minutes", *roles}:
+    if not isinstance(quota, dict) or set(quota) != {"provider", "account_id", "high_reuse_ttl_minutes", "high_reuse_invocation_count", "roles"}:
         raise SupervisorError("quota policy has unknown or missing keys")
-    if quota["provider"] != "manual":
+    if quota["provider"] != "manual" or not isinstance(quota["account_id"], str) or not quota["account_id"]:
         raise SupervisorError("unsupported quota provider")
-    for name in ("max_snapshot_age_minutes",):
+    for name in ("high_reuse_ttl_minutes", "high_reuse_invocation_count"):
         if isinstance(quota[name], bool) or not isinstance(quota[name], int) or quota[name] < 1:
             raise SupervisorError(f"quota.{name} must be a positive integer")
-    for role in roles:
-        reserve = quota[role]
-        if not isinstance(reserve, dict) or set(reserve) != {"five_hour_percent_left", "weekly_percent_left"}:
-            raise SupervisorError(f"quota reserve for {role!r} has unknown or missing keys")
-        for name, value in reserve.items():
-            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not 0 <= value <= 100:
-                raise SupervisorError(f"quota reserve {role}.{name} must be a finite percentage between 0 and 100")
+    if not isinstance(quota["roles"], dict) or set(quota["roles"]) != roles:
+        raise SupervisorError("quota ranges must declare exactly the supported roles")
+    for role, windows in quota["roles"].items():
+        if not isinstance(windows, dict) or set(windows) != {"five_hour", "weekly"}:
+            raise SupervisorError(f"quota ranges for {role!r} must declare five_hour and weekly")
+        for window, ranges in windows.items():
+            if not isinstance(ranges, dict) or set(ranges) != {"low", "medium", "high"}:
+                raise SupervisorError(f"quota ranges for {role}.{window} are malformed")
+            expected_minimum = 0
+            for level in ("low", "medium", "high"):
+                bounds = ranges[level]
+                if not isinstance(bounds, dict) or set(bounds) != {"minimum_percent", "maximum_percent"}:
+                    raise SupervisorError(f"quota {role}.{window}.{level} bounds are malformed")
+                low, high = bounds["minimum_percent"], bounds["maximum_percent"]
+                if any(isinstance(item, bool) or not isinstance(item, int) for item in (low, high)) or low != expected_minimum or not 0 <= low <= high <= 100:
+                    raise SupervisorError(f"quota {role}.{window} ranges must be contiguous integer percentages")
+                expected_minimum = high + 1
+            if expected_minimum != 101:
+                raise SupervisorError(f"quota {role}.{window} ranges must cover 0 through 100")
     watchdog = policy["model_watchdog"]
     if not isinstance(watchdog, dict) or set(watchdog) != {"warning_seconds", "hard_timeout_seconds", "terminate_grace_seconds"}:
         raise SupervisorError("model_watchdog has unknown or missing keys")
@@ -342,21 +373,27 @@ class QuotaProvider(Protocol):
     ) -> dict[str, Any]:
         ...
 
+    def invalidate(self, observation_id: str, reason: str) -> None:
+        ...
+
 
 class ManualQuotaProvider:
     """Quota provider backed only by a user-observed, repository-local snapshot."""
 
-    def __init__(self, path: Path, now: Callable[[], datetime] = utc_now):
+    def __init__(self, path: Path, now: Callable[[], datetime] = utc_now, *, models: dict[str, Any] | None = None, quota_policy: dict[str, Any] | None = None):
         self.path = path
         self.now = now
+        self.models = models or {}
+        self.quota_policy = quota_policy or {}
 
     def snapshot(self) -> dict[str, Any] | None:
         if not self.path.exists():
             return None
         ledger = read_json(self.path)
-        if set(ledger) != {"version", "current_observation_id", "observations"}:
+        expected = {"version", "current_observation_id", "observations"}
+        if set(ledger) != expected and set(ledger) != expected | {"predecessor"}:
             raise SupervisorError("quota ledger is missing durable observation-consumption state")
-        if ledger.get("version") != 2 or not isinstance(ledger.get("observations"), list):
+        if ledger.get("version") not in {2, 3} or not isinstance(ledger.get("observations"), list):
             raise SupervisorError("quota ledger has an unsupported version or malformed observations")
         current_id = ledger.get("current_observation_id")
         observations = ledger["observations"]
@@ -374,10 +411,7 @@ class ManualQuotaProvider:
             raise SupervisorError("quota ledger observation identity is missing, duplicate, or ambiguous")
         return dict(observations[identifiers.index(current_id)])
 
-    def set(
-        self, five_hour: float, weekly: float | None = None,
-        five_reset: str | None = None, weekly_reset: str | None = None,
-    ) -> dict[str, Any]:
+    def set(self, five_hour: float, weekly: float | None = None) -> dict[str, Any]:
         if five_hour is None:
             raise SupervisorError("five-hour percentage is required")
         for name, value in (("five-hour", five_hour), ("weekly", weekly)):
@@ -388,68 +422,125 @@ class ManualQuotaProvider:
                 or value < 0 or value > 100
             ):
                 raise SupervisorError(f"{name} percentage must be a finite number between 0 and 100")
-        five = parse_datetime(five_reset) if five_reset is not None else None
-        week = parse_datetime(weekly_reset) if weekly_reset is not None else None
         value: dict[str, Any] = {
             "observation_id": uuid.uuid4().hex,
             "observed_at": isoformat(self.now()),
             "five_hour_percent_left": five_hour,
-            "five_hour_reset_at": isoformat(five) if five is not None else None,
             "weekly_percent_left": weekly,
-            "weekly_reset_at": isoformat(week) if week is not None else None,
             "source": "manual",
-            "authorization": {"status": "available"},
+            "provider": self.quota_policy.get("provider"),
+            "account_id": self.quota_policy.get("account_id"),
+            "models": {role: config.get("model") for role, config in self.models.items()},
+            "authorizations": [],
         }
         observations: list[dict[str, Any]] = []
         if self.path.exists():
-            try:
-                existing = read_json(self.path)
-                if (
-                    existing.get("version") == 2
-                    and isinstance(existing.get("observations"), list)
-                ):
-                    observations = list(existing["observations"])
-            except SupervisorError:
-                # A newly supplied trusted observation repairs an unreadable legacy
-                # snapshot. Invalid data is never treated as authorization.
-                observations = []
+            existing = read_json(self.path)
+            if existing.get("version") == 2:
+                raise SupervisorError(
+                    "legacy quota ledger is inspection-only; run quota migration-dry-run "
+                    "and quota migration-apply before recording a new observation"
+                )
+            if (
+                existing.get("version") != 3
+                or not isinstance(existing.get("observations"), list)
+            ):
+                raise SupervisorError("quota ledger is malformed; refusing to overwrite it")
+            observations = list(existing["observations"])
         observations.append(value)
         atomic_write_json(self.path, {
-            "version": 2,
+            "version": 3,
             "current_observation_id": value["observation_id"],
             "observations": observations,
         })
         return value
 
-    @staticmethod
-    def _authorization_error(value: dict[str, Any]) -> str | None:
-        authorization = value.get("authorization")
-        if not isinstance(authorization, dict):
-            return "quota observation is missing durable consumption state"
-        if authorization == {"status": "available"}:
-            return None
-        required = {
-            "status", "consumed_at", "invocation_id", "role", "ticket", "recovery",
-        }
-        if (
-            set(authorization) == required
-            and authorization.get("status") == "consumed"
-            and all(
-                isinstance(authorization.get(key), str) and authorization[key]
-                for key in ("consumed_at", "invocation_id", "role", "ticket")
-            )
-            and isinstance(authorization.get("recovery"), bool)
-        ):
-            try:
-                parse_datetime(authorization["consumed_at"])
-            except SupervisorError:
-                return "quota observation has an invalid consumption timestamp"
-            return (
-                f"quota observation {value.get('observation_id', 'unknown')} was consumed by "
-                f"{authorization['role']} invocation {authorization['invocation_id']} "
-                f"for {authorization['ticket']} at {authorization['consumed_at']}"
-            )
-        return "quota observation consumption state is inconsistent or ambiguous"
+    def migration_dry_run(self) -> dict[str, Any]:
+        """Describe the only supported ledger conversion without modifying legacy evidence."""
+        if not self.path.exists():
+            raise SupervisorError("quota migration requires an existing ledger")
+        source = read_json(self.path)
+        if source.get("version") == 3:
+            return {"status": "already_applied", "from_version": 3, "to_version": 3, "writes_required": False}
+        if source.get("version") != 2 or not isinstance(source.get("observations"), list):
+            raise SupervisorError("unsupported quota ledger migration source")
+        target = self._convert_v2(source)
+        checksum = content_checksum(source)
+        return {"status": "supported", "from_version": 2, "to_version": 3, "writes_required": True,
+                "source_checksum": checksum, "target_checksum": content_checksum(target),
+                "archive": f"quota-predecessors/{checksum}.json"}
+
+    def _convert_v2(self, source: dict[str, Any]) -> dict[str, Any]:
+        observations = []
+        for legacy in source["observations"]:
+            if not isinstance(legacy, dict) or not isinstance(legacy.get("observation_id"), str):
+                raise SupervisorError("legacy quota ledger observation is malformed")
+            observations.append({
+                "observation_id": legacy["observation_id"], "observed_at": legacy.get("observed_at"),
+                "five_hour_percent_left": legacy.get("five_hour_percent_left"),
+                "weekly_percent_left": legacy.get("weekly_percent_left"), "source": "manual",
+                "provider": self.quota_policy.get("provider"), "account_id": self.quota_policy.get("account_id"),
+                "models": {role: config.get("model") for role, config in self.models.items()},
+                "authorizations": [{"status": "invalidated", "invalidated_at": legacy.get("observed_at"), "reason": "legacy_conversion_requires_fresh_observation"}],
+            })
+        return {"version": 3, "current_observation_id": source.get("current_observation_id"), "observations": observations,
+                "predecessor": {"version": 2, "checksum": content_checksum(source)}}
+
+    def apply_migration(self) -> dict[str, Any]:
+        report = self.migration_dry_run()
+        if not report["writes_required"]:
+            return report
+        source = read_json(self.path)
+        if content_checksum(source) != report["source_checksum"]:
+            raise SupervisorError("quota ledger changed after migration dry-run")
+        archive = self.path.parent / report["archive"]
+        archive.parent.mkdir(parents=True, exist_ok=True)
+        if not archive.exists():
+            atomic_write_json(archive, source)
+        target = self._convert_v2(source)
+        if content_checksum(target) != report["target_checksum"]:
+            raise SupervisorError("quota migration transformation was not deterministic")
+        atomic_write_json(self.path, target)
+        return report
+
+    def rollback_migration(self) -> dict[str, Any]:
+        current = read_json(self.path)
+        predecessor = current.get("predecessor")
+        if current.get("version") != 3 or not isinstance(predecessor, dict) or set(predecessor) != {"version", "checksum"}:
+            raise SupervisorError("quota rollback requires a converted v3 ledger")
+        archive = self.path.parent / "quota-predecessors" / f"{predecessor['checksum']}.json"
+        source = read_json(archive)
+        if source.get("version") != 2 or content_checksum(source) != predecessor["checksum"]:
+            raise SupervisorError("quota predecessor archive is missing or inconsistent")
+        atomic_write_json(self.path, source)
+        return {"status": "rolled_back", "from_version": 3, "to_version": 2, "writes_required": True}
+
+    def _validated_v3(self, value: dict[str, Any], role: str, policy: dict[str, Any]) -> tuple[datetime, str, int] | str:
+        required = {"observation_id", "observed_at", "five_hour_percent_left", "weekly_percent_left", "source", "provider", "account_id", "models", "authorizations"}
+        if set(value) != required or value["source"] != "manual" or value["provider"] != policy["provider"] or value["account_id"] != policy["account_id"]:
+            return "quota observation provider or account context is contradictory"
+        if not isinstance(value["models"], dict) or value["models"].get(role) != self.models.get(role, {}).get("model"):
+            return "quota observation model context changed or is unknown"
+        try:
+            observed = parse_datetime(value["observed_at"])
+            percentages = {"five_hour": value["five_hour_percent_left"], "weekly": value["weekly_percent_left"]}
+            levels: list[str] = []
+            for window, raw in percentages.items():
+                if isinstance(raw, bool) or not isinstance(raw, (int, float)) or not math.isfinite(raw) or not 0 <= raw <= 100:
+                    return "quota observation is malformed"
+                ranges = policy["roles"][role][window]
+                level = next((name for name in ("low", "medium", "high") if ranges[name]["minimum_percent"] <= raw <= ranges[name]["maximum_percent"]), None)
+                if level is None:
+                    return "quota observation range is contradictory"
+                levels.append(level)
+            if not isinstance(value["authorizations"], list):
+                return "quota observation authorization audit is malformed"
+        except (SupervisorError, TypeError, KeyError):
+            return "quota observation is malformed"
+        if any(item.get("status") == "invalidated" for item in value["authorizations"] if isinstance(item, dict)):
+            return "quota observation was invalidated by a provider rate/usage signal"
+        level = "low" if "low" in levels else "medium" if "medium" in levels else "high"
+        return observed, level, sum(1 for item in value["authorizations"] if isinstance(item, dict) and item.get("status") == "consumed")
 
     def evaluate(self, role: str, policy: dict[str, Any]) -> tuple[str, str]:
         try:
@@ -459,82 +550,44 @@ class ManualQuotaProvider:
         refresh = quota_refresh_instructions(value)
         if value is None:
             return "unknown", "No trusted quota snapshot exists.\n" + refresh
-        if "authorization" not in value:
-            return "unknown", "quota observation is missing durable consumption state.\n" + refresh
-        required = {
-            "observation_id", "authorization",
-            "observed_at", "five_hour_percent_left", "five_hour_reset_at",
-            "weekly_percent_left", "weekly_reset_at", "source",
-        }
-        if set(value) != required or value.get("source") != "manual":
-            return "unknown", "The quota snapshot is malformed or from an unsupported source.\n" + refresh
-        authorization_error = self._authorization_error(value)
-        if authorization_error:
-            return "unknown", authorization_error + ". A fresh quota observation is required.\n" + refresh
-        try:
-            observed = parse_datetime(str(value["observed_at"]))
-            five_raw = value["five_hour_percent_left"]
-            weekly_raw = value["weekly_percent_left"]
-            if isinstance(five_raw, bool) or five_raw is None:
-                raise ValueError("five-hour quota is required")
-            five = float(five_raw)
-            weekly = None if weekly_raw is None else float(weekly_raw)
-            if (
-                not math.isfinite(five) or five < 0 or five > 100
-                or isinstance(weekly_raw, bool)
-                or weekly is not None and (not math.isfinite(weekly) or weekly < 0 or weekly > 100)
-            ):
-                raise ValueError("quota percentage is outside its valid range")
-            for reset_key in ("five_hour_reset_at", "weekly_reset_at"):
-                reset = value[reset_key]
-                if reset is not None:
-                    if not isinstance(reset, str) or not reset:
-                        raise ValueError("reset timestamp must be a nonempty string")
-                    parse_datetime(reset)
-        except (SupervisorError, TypeError, ValueError):
-            return "unknown", "The quota snapshot cannot be validated.\n" + refresh
-        now = self.now()
-        age = timedelta(minutes=float(policy["max_snapshot_age_minutes"]))
-        reasons: list[str] = []
-        if now > observed + age:
-            reasons.append(f"snapshot observed at {isoformat(observed)} is older than {age}")
-        if reasons:
-            return "unknown", "; ".join(reasons) + ".\n" + refresh
-        thresholds = policy[role]
-        low: list[str] = []
-        if five < float(thresholds["five_hour_percent_left"]):
-            low.append(
-                f"5-hour quota {five:g}% is below the {thresholds['five_hour_percent_left']}% "
-                f"{role} reserve"
-            )
-        if weekly is not None and weekly < float(thresholds["weekly_percent_left"]):
-            low.append(
-                f"weekly quota {weekly:g}% is below the {thresholds['weekly_percent_left']}% "
-                f"{role} reserve"
-            )
-        if low:
-            return "low", "; ".join(low)
-        supplied = f"5-hour {five:g}%"
-        if weekly is not None:
-            supplied += f" and weekly {weekly:g}%"
-        else:
-            supplied += "; weekly not supplied"
-        return "ok", (
-            f"quota accepted for {role}: {supplied} "
-            f"(observation {value['observation_id']}, observed {isoformat(observed)})"
-        )
+        validated = self._validated_v3(value, role, policy)
+        if isinstance(validated, str):
+            return "unknown", validated + ".\n" + refresh
+        observed, level, uses = validated
+        if level == "low":
+            return "low", "quota observation is in the configured low range"
+        if level == "medium":
+            if uses:
+                return "unknown", "medium-range observations require a fresh trusted observation per call.\n" + refresh
+            return "ok", f"medium observed quota authorizes one {role} call (observation {value['observation_id']})"
+        ttl = timedelta(minutes=policy["high_reuse_ttl_minutes"])
+        if self.now() > observed + ttl:
+            return "unknown", "high-range observation TTL expired.\n" + refresh
+        if uses >= policy["high_reuse_invocation_count"]:
+            return "unknown", "high-range observation reuse count is exhausted.\n" + refresh
+        return "ok", f"high observed quota authorizes reuse {uses + 1}/{policy['high_reuse_invocation_count']} (observation {value['observation_id']})"
 
     def consume(
         self, observation_id: str, *, role: str, ticket: str,
         invocation_id: str, recovery: bool, policy: dict[str, Any],
     ) -> dict[str, Any]:
-        result, message = self.evaluate(role, policy)
-        if result != "ok":
-            raise SupervisorError("quota authorization became unusable before model start: " + message)
         ledger = read_json(self.path)
         current = self.snapshot()
         if current is None or current.get("observation_id") != observation_id:
             raise SupervisorError("quota observation changed after authorization; a fresh quota check is required")
+        for item in current.get("authorizations", []):
+            if isinstance(item, dict) and item.get("invocation_id") == invocation_id:
+                if (
+                    item.get("status") != "consumed"
+                    or item.get("role") != role
+                    or item.get("ticket") != ticket
+                    or item.get("recovery") is not recovery
+                ):
+                    raise SupervisorError("quota invocation identity is contradictory; refusing double consumption")
+                return {"observation_id": observation_id, **item}
+        result, message = self.evaluate(role, policy)
+        if result != "ok":
+            raise SupervisorError("quota authorization became unusable before model start: " + message)
         authorization = {
             "status": "consumed",
             "consumed_at": isoformat(self.now()),
@@ -551,7 +604,7 @@ class ManualQuotaProvider:
         if len(matches) != 1 or ledger.get("current_observation_id") != observation_id:
             raise SupervisorError("quota observation identity is inconsistent; refusing model start")
         consumed = dict(observations[matches[0]])
-        consumed["authorization"] = authorization
+        consumed["authorizations"] = [*consumed["authorizations"], authorization]
         observations[matches[0]] = consumed
         ledger["observations"] = observations
         atomic_write_json(self.path, ledger)
@@ -559,6 +612,24 @@ class ManualQuotaProvider:
             "observation_id": observation_id,
             **authorization,
         }
+
+    def invalidate(self, observation_id: str, reason: str) -> None:
+        """Durably make an observation unusable after a provider usage/rate signal."""
+        ledger = read_json(self.path)
+        observations = list(ledger.get("observations", []))
+        matches = [index for index, item in enumerate(observations) if isinstance(item, dict) and item.get("observation_id") == observation_id]
+        if len(matches) != 1:
+            raise SupervisorError("quota observation identity is inconsistent while invalidating")
+        observation = dict(observations[matches[0]])
+        if ledger.get("version") != 3 or "authorizations" not in observation:
+            return  # Legacy ledgers are intentionally readable but never mutated.
+        observation["authorizations"] = [
+            *observation["authorizations"],
+            {"status": "invalidated", "invalidated_at": isoformat(self.now()), "reason": reason},
+        ]
+        observations[matches[0]] = observation
+        ledger["observations"] = observations
+        atomic_write_json(self.path, ledger)
 
 
 def quota_refresh_instructions(_existing: dict[str, Any] | None) -> str:
@@ -585,13 +656,12 @@ def default_project_policy(expected_branch: str) -> dict[str, Any]:
             "diagnostic": {"model": "gpt-5.6-sol", "reasoning_effort": "high"},
             "supervisor_repair": {"model": "gpt-5.6-sol", "reasoning_effort": "high"},
         },
-        "quota": {
-            "provider": "manual", "max_snapshot_age_minutes": 30,
+        "quota": _observed_quota_policy({
             "implementation": {"five_hour_percent_left": 20, "weekly_percent_left": 15},
             "architecture": {"five_hour_percent_left": 30, "weekly_percent_left": 20},
             "diagnostic": {"five_hour_percent_left": 30, "weekly_percent_left": 20},
             "supervisor_repair": {"five_hour_percent_left": 30, "weekly_percent_left": 20},
-        },
+        }),
         "diagnostic": {
             "completed_same_ticket_recoveries": 2, "max_recent_runs": 4,
             "max_history_entries": 80, "max_artifact_bytes": 16000,
@@ -606,7 +676,6 @@ def default_project_policy(expected_branch: str) -> dict[str, Any]:
             "warning_seconds": 2700, "hard_timeout_seconds": 5400,
             "terminate_grace_seconds": 10,
         },
-        "forecast": {"minimum_history_samples": 2},
         "capabilities": dict.fromkeys(CAPABILITY_NAMES, False),
         "milestones": [],
         "verification_commands": [{"name": "Git diff check", "command": ["git", "diff", "--check"]}],
@@ -1605,7 +1674,9 @@ class Supervisor:
         self.progress = progress or (lambda _message: None)
         if quota_provider is None and self.policy["quota"].get("provider") != "manual":
             raise SupervisorError(f"unsupported quota provider: {self.policy['quota'].get('provider')!r}")
-        self.quota: QuotaProvider = quota_provider or ManualQuotaProvider(self.runtime / "quota.json", now)
+        self.quota: QuotaProvider = quota_provider or ManualQuotaProvider(
+            self.runtime / "quota.json", now, models=self.policy["models"], quota_policy=self.policy["quota"],
+        )
         self.model_runner = model_runner or CodexRunner(self.root, notify=self._emit_raw)
         self.supervisor_repair_runner = supervisor_repair_runner or (
             CodexRunner(self.assets_dir, notify=self._emit_raw)
@@ -2675,8 +2746,6 @@ class Supervisor:
         checkpoint = self._checkpoint_data(state)
         reasons = self._checkpoint_reasons(state)
         elapsed = self._current_run_elapsed(state, active)
-        history, history_error = self._timing_history()
-        forecast = self._forecast(history, history_error)
         return {
             "phase": state["phase"],
             "backlog_cycle_phase": backlog_cycle["phase"] if backlog_cycle is not None else None,
@@ -2712,7 +2781,6 @@ class Supervisor:
                 "plan_epochs": state.get("plan_epochs", []),
                 "state_migration": state.get("state_migration"),
             },
-            "forecast": forecast,
             "effective_configuration": self.effective_configuration(),
             "next_actions": self._next_actions(state),
             "quiescent": state["phase"] in TERMINAL_STATES,
@@ -2739,37 +2807,6 @@ class Supervisor:
             except SupervisorError:
                 return 0.0
         return 0.0
-
-    def _forecast(self, history: dict[str, Any], history_error: str | None) -> dict[str, Any]:
-        if history_error:
-            return {"status": "insufficient_history", "text": f"insufficient history (invalid timing data: {history_error})"}
-        values: list[float] = []
-        malformed = False
-        for record in history.get("tickets", []):
-            duration = record.get("duration_seconds") if isinstance(record, dict) else None
-            if isinstance(duration, (int, float)) and duration >= 0:
-                values.append(float(duration))
-            else:
-                malformed = True
-        minimum = int(self.policy["forecast"]["minimum_history_samples"])
-        if malformed or len(values) < minimum:
-            suffix = "; malformed records ignored" if malformed else ""
-            return {
-                "status": "insufficient_history",
-                "text": f"insufficient history ({len(values)}/{minimum} completed-ticket samples){suffix}",
-            }
-        low = max(0.0, min(values) * 0.75)
-        high = max(values) * 1.5
-        return {
-            "status": "observed_range",
-            "low_seconds": low,
-            "high_seconds": high,
-            "samples": len(values),
-            "text": (
-                f"approximate next-ticket pipeline range {format_duration(low)}–{format_duration(high)} "
-                f"from {len(values)} local samples; architecture escalation increases uncertainty"
-            ),
-        }
 
     def _next_actions(self, state: dict[str, Any]) -> list[str]:
         ticket = state["current_ticket"]
@@ -2893,20 +2930,17 @@ class Supervisor:
             f"  Status: {value['quota_status'].upper()}",
         ]
         if quota:
-            five_reset = quota.get("five_hour_reset_at") or "not supplied"
             weekly = quota.get("weekly_percent_left")
             weekly_text = f"{weekly}%" if weekly is not None else "not supplied"
-            weekly_reset = quota.get("weekly_reset_at") or "not supplied"
             lines.extend([
-                f"  5-hour: {quota.get('five_hour_percent_left', 'unknown')}% · reset {five_reset}",
-                f"  Weekly: {weekly_text} · reset {weekly_reset}",
+                f"  5-hour: {quota.get('five_hour_percent_left', 'unknown')}%",
+                f"  Weekly: {weekly_text}",
             ])
         else:
             lines.extend(["  5-hour: unknown", "  Weekly: unknown"])
-        reserve = self.policy["quota"][value["current_role"]]
+        ranges = self.policy["quota"]["roles"][value["current_role"]]
         lines.extend([
-            f"  Applicable reserve: 5-hour {reserve['five_hour_percent_left']}% · "
-            f"weekly {reserve['weekly_percent_left']}% when supplied",
+            f"  Applicable ranges: 5-hour {ranges['five_hour']} · weekly {ranges['weekly']}",
             f"  Next model permitted now: {'yes' if value['quota_status'] == 'ok' else 'no'}",
             "",
             "PERIODIC CHECKPOINT",
@@ -2915,10 +2949,9 @@ class Supervisor:
             f"  Model invocations: {checkpoint['model_invocations']} / {policy_checkpoint['max_model_invocations']}",
             f"  Due: {'yes · ' + '; '.join(value['checkpoint_due']) if value['checkpoint_due'] else 'no'}",
             "",
-            "PROGRESS / FORECAST",
+            "PROGRESS",
             f"  Current ticket: {current}",
             f"  Completed/current stages: {value['last_completed_result'] or 'no completed stage recorded'} / {value['phase']}",
-            f"  ETA: {value['forecast']['text']} (ETA is approximate)",
             "",
             "CAPABILITIES",
             "  " + "; ".join(
@@ -3957,6 +3990,8 @@ class Supervisor:
         active["usage"] = result.usage
         active["report"] = result.report
         active["rate_limited"] = result.rate_limited
+        if result.rate_limited:
+            self.quota.invalidate(observation_id, "rate_or_usage_signal")
         active["error"] = result.error
         active["duration_seconds"] = result.duration_seconds
         active["finished_at"] = isoformat(self.now())
@@ -4148,6 +4183,8 @@ class Supervisor:
             },
             "accounting_recorded": True,
         })
+        if result.rate_limited:
+            self.quota.invalidate(observation_id, "rate_or_usage_signal")
         self._record_model_accounting(
             state, role="diagnostic", ticket=ticket,
             duration=result.duration_seconds, interrupted=result.interrupted,
@@ -4449,6 +4486,8 @@ class Supervisor:
             "product_fingerprint_after": product_after["fingerprint"],
             "head_after_model": repair_git.head(),
         })
+        if result.rate_limited:
+            self.quota.invalidate(observation_id, "rate_or_usage_signal")
         self._record_model_accounting(
             state, role="supervisor_repair", ticket=ticket,
             duration=result.duration_seconds, interrupted=result.interrupted,
@@ -7599,11 +7638,12 @@ def build_parser() -> argparse.ArgumentParser:
     quota = subparsers.add_parser("quota", help="manage the quota provider")
     quota_sub = quota.add_subparsers(dest="quota_command", required=True)
     quota_sub.add_parser("show", help="show the manual quota snapshot")
+    quota_sub.add_parser("migration-dry-run", help="validate a legacy quota-ledger conversion without writing")
+    quota_sub.add_parser("migration-apply", help="archive and convert a legacy quota ledger")
+    quota_sub.add_parser("migration-rollback", help="restore the archived legacy quota ledger")
     quota_set = quota_sub.add_parser("set", help="record a trusted manual quota observation")
     quota_set.add_argument("--five-hour", type=float, required=True)
-    quota_set.add_argument("--weekly", type=float)
-    quota_set.add_argument("--five-hour-reset")
-    quota_set.add_argument("--weekly-reset")
+    quota_set.add_argument("--weekly", type=float, required=True)
     gate = subparsers.add_parser("gate", help="manage explicit human gates")
     gate_sub = gate.add_subparsers(dest="gate_command", required=True)
     release = gate_sub.add_parser("release", help="release the current gate after human review")
@@ -7784,9 +7824,14 @@ def main(arguments: list[str] | None = None) -> int:
             with supervisor.operation_lock():
                 if not isinstance(supervisor.quota, ManualQuotaProvider):
                     raise SupervisorError("quota set is only available for ManualQuotaProvider")
-                value = supervisor.quota.set(
-                    args.five_hour, args.weekly, args.five_hour_reset, args.weekly_reset,
-                )
+                if args.quota_command == "set":
+                    value = supervisor.quota.set(args.five_hour, args.weekly)
+                elif args.quota_command == "migration-dry-run":
+                    value = supervisor.quota.migration_dry_run()
+                elif args.quota_command == "migration-apply":
+                    value = supervisor.quota.apply_migration()
+                else:
+                    value = supervisor.quota.rollback_migration()
             print_json(value)
             return 0
         with supervisor.operation_lock():

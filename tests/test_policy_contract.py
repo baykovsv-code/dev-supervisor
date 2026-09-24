@@ -79,14 +79,14 @@ class PolicyContractTests(unittest.TestCase):
         with self.assertRaisesRegex(module.SupervisorError, "cannot exceed"):
             module.validate_project_policy(policy)
 
-    def test_legacy_dry_run_reports_removed_forecast_field_without_preserving_it(self):
+    def test_legacy_dry_run_removes_forecast_without_preserving_it(self):
         legacy = deepcopy(self.policy)
         legacy["version"] = 1
         legacy.pop("capabilities")
-        legacy["forecast"]["fallback_ticket_hours"] = [1, 4]
+        legacy["forecast"] = {"fallback_ticket_hours": [1, 4]}
         migrated, report = module.migrate_legacy_policy(legacy)
-        self.assertEqual(report["removed_fields"], ["forecast.fallback_ticket_hours"])
-        self.assertNotIn("fallback_ticket_hours", migrated["forecast"])
+        self.assertEqual(report["removed_fields"], ["forecast"])
+        self.assertNotIn("forecast", migrated)
         self.assertEqual(migrated["capabilities"], dict.fromkeys(module.CAPABILITY_NAMES, False))
 
 

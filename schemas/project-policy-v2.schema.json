@@ -1,20 +1,20 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Development Supervisor project policy v2",
+  "title": "Development Supervisor project policy v3",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "version", "expected_branch", "bootstrap_ticket", "initial_completed_tickets",
     "implementation_plan", "authoritative_documents", "supervisor_control_paths",
     "supervisor_repair_repository", "models", "quota", "diagnostic",
-    "periodic_checkpoint", "model_watchdog", "forecast", "milestones",
+    "periodic_checkpoint", "model_watchdog", "milestones",
     "verification_commands", "supervisor_repair_verification_commands",
     "host_verification_capabilities", "ticket_verification_commands",
     "evidence_check_commands", "human_evidence_gates", "implementation_forbidden_paths",
     "architecture_allowed_paths", "capabilities"
   ],
   "properties": {
-    "version": {"const": 2},
+    "version": {"const": 3},
     "expected_branch": {"type": "string"},
     "bootstrap_ticket": {"type": "string"},
     "initial_completed_tickets": {"type": "array", "items": {"type": "string"}},
@@ -22,7 +22,17 @@
     "authoritative_documents": {"type": "array", "items": {"type": "string"}},
     "supervisor_control_paths": {"type": "array", "items": {"type": "string"}},
     "supervisor_repair_repository": {"type": "string"},
-    "models": {"type": "object"}, "quota": {"type": "object"},
+    "models": {"type": "object"},
+    "quota": {
+      "type": "object", "additionalProperties": false,
+      "required": ["provider", "account_id", "high_reuse_ttl_minutes", "high_reuse_invocation_count", "roles"],
+      "properties": {
+        "provider": {"const": "manual"}, "account_id": {"type": "string"},
+        "high_reuse_ttl_minutes": {"type": "integer", "minimum": 1},
+        "high_reuse_invocation_count": {"type": "integer", "minimum": 1},
+        "roles": {"type": "object"}
+      }
+    },
     "diagnostic": {"type": "object"}, "periodic_checkpoint": {"type": "object"},
     "model_watchdog": {"type": "object"}, "milestones": {"type": "array"},
     "verification_commands": {"type": "array"},
@@ -32,11 +42,6 @@
     "evidence_check_commands": {"type": "object"}, "human_evidence_gates": {"type": "object"},
     "implementation_forbidden_paths": {"type": "array", "items": {"type": "string"}},
     "architecture_allowed_paths": {"type": "array", "items": {"type": "string"}},
-    "forecast": {
-      "type": "object", "additionalProperties": false,
-      "required": ["minimum_history_samples"],
-      "properties": {"minimum_history_samples": {"type": "integer", "minimum": 1}}
-    },
     "capabilities": {"$ref": "#/$defs/capabilities"}
   },
   "$defs": {

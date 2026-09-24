@@ -128,6 +128,9 @@ class SupervisorTests(unittest.TestCase):
         self.policy = json.loads(
             (MODULE_PATH.parent / "tests/fixtures/reference-policy.json").read_text(encoding="utf-8")
         )
+        # Ordinary lifecycle tests exercise the current observed-quota policy.
+        # The fixture remains a v1 compatibility input for explicit migration tests.
+        self.policy, _ = supervisor_module.migrate_legacy_policy(self.policy)
         self.policy.update({
             "implementation_plan": "docs/architecture/implementation-plan.md",
             "authoritative_documents": ["docs/architecture/implementation-plan.md"],
@@ -184,13 +187,13 @@ class SupervisorTests(unittest.TestCase):
             with self.assertRaisesRegex(SupervisorError, "refusing to overwrite"):
                 initialize_repository(root)
 
-    def set_quota(self, supervisor, five=90, weekly=90, *, five_reset=None, week_reset=None):
-        supervisor.quota.set(
-            five,
-            weekly,
-            (five_reset or NOW + timedelta(hours=3)).isoformat(),
-            (week_reset or NOW + timedelta(days=3)).isoformat(),
-        )
+    def set_quota(self, supervisor, five=90, weekly=90):
+        supervisor.quota.set(five, weekly)
+
+    @staticmethod
+    def quota_authorization(observation):
+        entries = observation["authorizations"]
+        return entries[-1] if entries else {"status": "available"}
 
     def write_action(self, relative, result_report):
         def action(role, ticket, run_dir):
@@ -696,7 +699,7 @@ class SupervisorTests(unittest.TestCase):
         supervisor = None
 
         def approve(role, ticket, run_dir):
-            observed.append(supervisor.quota.snapshot()["authorization"]["status"])
+            observed.append(self.quota_authorization(supervisor.quota.snapshot())["status"])
             return InvocationResult(0, report(role, ticket), {})
 
         supervisor, runner, _, protected = self.protected_scope_checkpoint(approve)
@@ -847,7 +850,7 @@ class SupervisorTests(unittest.TestCase):
         self.set_quota(supervisor, five=19)
         state = supervisor.run()
         self.assertEqual(state["phase"], "QUOTA_LOW")
-        self.assertIn("5-hour", state["message"])
+        self.assertIn("configured low range", state["message"])
         self.assertEqual(runner.calls, [])
 
     def test_low_weekly_quota_blocks_invocation(self):
@@ -856,58 +859,51 @@ class SupervisorTests(unittest.TestCase):
         self.set_quota(supervisor, weekly=14)
         state = supervisor.run()
         self.assertEqual(state["phase"], "QUOTA_LOW")
-        self.assertIn("weekly", state["message"])
+        self.assertIn("configured low range", state["message"])
         self.assertEqual(runner.calls, [])
 
-    def test_five_hour_only_cli_observation_is_accepted(self):
-        (self.root / "dev-supervisor.json").write_text(json.dumps(self.policy), encoding="utf-8")
-        output = StringIO()
-        with patch.object(supervisor_module, "repository_root", return_value=self.root):
-            with redirect_stdout(output):
-                exit_code = supervisor_module.main([
-                    "quota", "set", "--five-hour", "50",
-                ])
-
-        self.assertEqual(exit_code, 0)
-        value = json.loads(output.getvalue())
-        self.assertEqual(value["five_hour_percent_left"], 50.0)
-        self.assertIsNone(value["weekly_percent_left"])
-        self.assertIsNone(value["five_hour_reset_at"])
-        self.assertIsNone(value["weekly_reset_at"])
-        supervisor = self.make_supervisor()
-        self.assertEqual(supervisor.quota.evaluate("implementation", self.policy["quota"])[0], "ok")
-        dashboard = supervisor.dashboard()
-        self.assertIn("Weekly: not supplied · reset not supplied", dashboard)
-
-    def test_full_legacy_quota_cli_form_remains_accepted(self):
+    def test_cli_requires_both_observed_windows_and_records_no_reset_time(self):
         (self.root / "dev-supervisor.json").write_text(json.dumps(self.policy), encoding="utf-8")
         output = StringIO()
         with patch.object(supervisor_module, "repository_root", return_value=self.root):
             with redirect_stdout(output):
                 exit_code = supervisor_module.main([
                     "quota", "set", "--five-hour", "50", "--weekly", "44",
-                    "--five-hour-reset", "2026-09-22T12:34:00+08:00",
-                    "--weekly-reset", "2026-09-28T12:34:00+08:00",
                 ])
 
         self.assertEqual(exit_code, 0)
         value = json.loads(output.getvalue())
+        self.assertEqual(value["five_hour_percent_left"], 50.0)
         self.assertEqual(value["weekly_percent_left"], 44.0)
-        self.assertEqual(value["five_hour_reset_at"], "2026-09-22T04:34:00Z")
-        self.assertEqual(value["weekly_reset_at"], "2026-09-28T04:34:00Z")
+        self.assertNotIn("five_hour_reset_at", value)
+        self.assertNotIn("weekly_reset_at", value)
+        supervisor = self.make_supervisor()
+        self.assertEqual(supervisor.quota.evaluate("implementation", self.policy["quota"])[0], "ok")
+        dashboard = supervisor.dashboard()
+        self.assertIn("Weekly: 44.0%", dashboard)
+
+    def test_cli_rejects_removed_reset_time_inputs(self):
+        (self.root / "dev-supervisor.json").write_text(json.dumps(self.policy), encoding="utf-8")
+        output = StringIO()
+        with patch.object(supervisor_module, "repository_root", return_value=self.root):
+            with self.assertRaises(SystemExit) as error:
+                supervisor_module.main([
+                    "quota", "set", "--five-hour", "50", "--weekly", "44",
+                    "--five-hour-reset", "2026-09-22T12:34:00+08:00",
+                    "--weekly-reset", "2026-09-28T12:34:00+08:00",
+                ])
+
+        self.assertEqual(error.exception.code, 2)
 
     def test_omitted_quota_fields_are_null_not_copied_from_prior_observation(self):
         supervisor = self.make_supervisor()
-        prior = supervisor.quota.set(
-            90, 80, (NOW + timedelta(hours=2)).isoformat(),
-            (NOW + timedelta(days=2)).isoformat(),
-        )
+        prior = supervisor.quota.set(90, 80)
 
-        current = supervisor.quota.set(50)
+        current = supervisor.quota.set(50, 50)
 
-        self.assertIsNone(current["weekly_percent_left"])
-        self.assertIsNone(current["five_hour_reset_at"])
-        self.assertIsNone(current["weekly_reset_at"])
+        self.assertEqual(current["weekly_percent_left"], 50)
+        self.assertNotIn("five_hour_reset_at", current)
+        self.assertNotIn("weekly_reset_at", current)
         ledger = json.loads((self.root / ".dev-supervisor/quota.json").read_text(encoding="utf-8"))
         self.assertEqual(ledger["observations"][-2], prior)
         self.assertEqual(ledger["observations"][-1], current)
@@ -919,27 +915,22 @@ class SupervisorTests(unittest.TestCase):
         result, message = supervisor.quota.evaluate("implementation", self.policy["quota"])
 
         self.assertEqual(result, "low")
-        self.assertIn("weekly quota 14%", message)
-        self.assertIn("15% implementation reserve", message)
+        self.assertIn("configured low range", message)
 
     def test_five_hour_only_observation_still_uses_hard_reserve(self):
         supervisor = self.make_supervisor()
-        supervisor.quota.set(19)
+        supervisor.quota.set(19, 90)
 
         result, message = supervisor.quota.evaluate("implementation", self.policy["quota"])
 
         self.assertEqual(result, "low")
-        self.assertIn("5-hour quota 19%", message)
-        self.assertIn("20% implementation reserve", message)
+        self.assertIn("configured low range", message)
 
     def test_malformed_supplied_optional_quota_fields_fail_closed(self):
         supervisor = self.make_supervisor()
         with self.assertRaises(SupervisorError):
             supervisor.quota.set(50, weekly=float("nan"))
-        with self.assertRaises(SupervisorError):
-            supervisor.quota.set(50, five_reset="not-a-timestamp")
-
-        supervisor.quota.set(50)
+        supervisor.quota.set(50, 50)
         ledger_path = self.root / ".dev-supervisor/quota.json"
         ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
         ledger["observations"][-1]["weekly_percent_left"] = "not-a-percent"
@@ -951,17 +942,17 @@ class SupervisorTests(unittest.TestCase):
         error = StringIO()
         (self.root / "dev-supervisor.json").write_text(json.dumps(self.policy), encoding="utf-8")
         with patch.object(supervisor_module, "repository_root", return_value=self.root):
-            with redirect_stdout(StringIO()), redirect_stderr(error):
-                exit_code = supervisor_module.main([
-                    "quota", "set", "--five-hour", "50",
+            with redirect_stdout(StringIO()), redirect_stderr(error), self.assertRaises(SystemExit) as exit_error:
+                supervisor_module.main([
+                    "quota", "set", "--five-hour", "50", "--weekly", "50",
                     "--weekly-reset", "still-not-a-timestamp",
                 ])
-        self.assertEqual(exit_code, 2)
-        self.assertIn("invalid ISO8601 timestamp", error.getvalue())
+        self.assertEqual(exit_error.exception.code, 2)
+        self.assertIn("unrecognized arguments", error.getvalue())
 
     def test_unknown_required_five_hour_dimension_fails_closed(self):
         supervisor = self.make_supervisor()
-        supervisor.quota.set(50)
+        supervisor.quota.set(50, 50)
         ledger_path = self.root / ".dev-supervisor/quota.json"
         ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
         ledger["observations"][-1]["five_hour_percent_left"] = None
@@ -970,7 +961,7 @@ class SupervisorTests(unittest.TestCase):
         result, message = supervisor.quota.evaluate("implementation", self.policy["quota"])
 
         self.assertEqual(result, "unknown")
-        self.assertIn("cannot be validated", message)
+        self.assertIn("malformed", message)
 
     def test_fresh_observation_is_consumed_before_first_model_call_and_blocks_second(self):
         policy = deepcopy(self.policy)
@@ -978,7 +969,7 @@ class SupervisorTests(unittest.TestCase):
         observed_authorization = []
 
         def successful(role, ticket, run_dir):
-            observed_authorization.append(supervisor.quota.snapshot()["authorization"])
+            observed_authorization.append(self.quota_authorization(supervisor.quota.snapshot()))
             path = self.root / "apps/search.py"
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("done\n", encoding="utf-8")
@@ -993,7 +984,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(state["phase"], "QUOTA_CHECK_REQUIRED")
         self.assertEqual(runner.calls, [("implementation", "T10")])
         self.assertEqual(observed_authorization[0]["status"], "consumed")
-        self.assertIn("was consumed by implementation invocation", state["message"])
+        self.assertIn("reuse count is exhausted", state["message"])
         authorization = state["quota_consumptions"][0]
         self.assertEqual(authorization["observation_id"], supervisor.quota.snapshot()["observation_id"])
         self.assertEqual(authorization["invocation_id"], observed_authorization[0]["invocation_id"])
@@ -1019,7 +1010,7 @@ class SupervisorTests(unittest.TestCase):
         ledger = json.loads((self.root / ".dev-supervisor/quota.json").read_text(encoding="utf-8"))
         self.assertEqual(len(ledger["observations"]), 2)
         self.assertEqual(
-            [item["authorization"]["status"] for item in ledger["observations"]],
+            [item["authorizations"][-1]["status"] for item in ledger["observations"]],
             ["consumed", "consumed"],
         )
 
@@ -1044,7 +1035,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(state["phase"], "QUOTA_CHECK_REQUIRED")
         self.assertEqual(state["quota_resume_phase"], "RECOVER_MODEL")
         self.assertEqual(runner.calls, [("implementation", "T29")])
-        self.assertIn("was consumed by implementation invocation", state["message"])
+        self.assertIn("fresh trusted observation per call", state["message"])
         self.assertTrue(state["quota_consumptions"][0]["recovery"] is False)
 
     def test_one_completed_recovery_does_not_invoke_diagnostic_before_next_terra(self):
@@ -1153,7 +1144,7 @@ class SupervisorTests(unittest.TestCase):
         run_ids = []
 
         def diagnose(role, ticket, run_dir):
-            self.assertEqual(supervisor.quota.snapshot()["authorization"]["status"], "consumed")
+            self.assertEqual(self.quota_authorization(supervisor.quota.snapshot())["status"], "consumed")
             return InvocationResult(
                 0, self.diagnostic_report(ticket, "HUMAN_DECISION_REQUIRED", run_ids), {},
             )
@@ -1169,7 +1160,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(runner.calls, [("diagnostic", "T10")])
         self.assertEqual(len(state["quota_consumptions"]), 1)
         self.assertEqual(state["quota_consumptions"][0]["role"], "diagnostic")
-        self.assertEqual(supervisor.quota.snapshot()["authorization"]["status"], "consumed")
+        self.assertEqual(self.quota_authorization(supervisor.quota.snapshot())["status"], "consumed")
 
     def test_product_fix_requires_another_fresh_observation_before_terra(self):
         run_ids = []
@@ -1606,7 +1597,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(state["phase"], "GIT_BLOCKED")
         self.assertEqual(runner.calls, [("diagnostic", "T10")])
         self.assertEqual((self.root / ".dev-supervisor/quota.json").read_bytes(), quota_before)
-        self.assertEqual(supervisor.quota.snapshot()["authorization"]["status"], "available")
+        self.assertEqual(self.quota_authorization(supervisor.quota.snapshot())["status"], "available")
 
     def test_preserved_architecture_entry_blocks_additional_product_without_consuming_quota(self):
         supervisor, runner, waiting = self.architecture_diagnostic_checkpoint(
@@ -1621,7 +1612,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(state["phase"], "GIT_BLOCKED")
         self.assertEqual(runner.calls, [("diagnostic", "T10")])
         self.assertEqual((self.root / ".dev-supervisor/quota.json").read_bytes(), quota_before)
-        self.assertEqual(supervisor.quota.snapshot()["authorization"]["status"], "available")
+        self.assertEqual(self.quota_authorization(supervisor.quota.snapshot())["status"], "available")
 
     def test_preserved_architecture_entry_blocks_cross_ticket_checkpoint(self):
         supervisor, runner, waiting = self.architecture_diagnostic_checkpoint(
@@ -1914,7 +1905,7 @@ class SupervisorTests(unittest.TestCase):
         state = supervisor.resume()
 
         self.assertEqual(state["phase"], "SUPERVISOR_REPAIR_FAILED")
-        self.assertEqual(supervisor.quota.snapshot()["authorization"]["status"], "available")
+        self.assertEqual(self.quota_authorization(supervisor.quota.snapshot())["status"], "available")
         self.assertEqual(runner.calls, [("diagnostic", "T10")])
 
     def test_valid_supervisor_repair_commits_only_supervisor_files_and_reclassifies(self):
@@ -2238,7 +2229,7 @@ class SupervisorTests(unittest.TestCase):
 
         self.assertEqual(state["phase"], "QUOTA_CHECK_REQUIRED")
         self.assertEqual(len(runner.calls), 1)
-        self.assertEqual(restarted.quota.snapshot()["authorization"]["status"], "consumed")
+        self.assertEqual(self.quota_authorization(restarted.quota.snapshot())["status"], "consumed")
 
     def test_periodic_checkpoint_release_does_not_revive_consumed_observation(self):
         policy = deepcopy(self.policy)
@@ -2281,7 +2272,7 @@ class SupervisorTests(unittest.TestCase):
         state = later.run()
 
         self.assertEqual(state["phase"], "QUOTA_CHECK_REQUIRED")
-        self.assertIn("older than", state["message"])
+        self.assertIn("TTL expired", state["message"])
 
     def test_new_below_reserve_observation_does_not_authorize_retry(self):
         runner = FakeModelRunner([
@@ -2303,20 +2294,20 @@ class SupervisorTests(unittest.TestCase):
         self.set_quota(supervisor)
         ledger_path = self.root / ".dev-supervisor/quota.json"
         ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
-        ledger["observations"][-1].pop("authorization")
+        ledger["observations"][-1].pop("authorizations")
         supervisor_module.atomic_write_json(ledger_path, ledger)
 
         state = supervisor.run()
 
         self.assertEqual(state["phase"], "QUOTA_CHECK_REQUIRED")
-        self.assertIn("missing durable consumption state", state["message"])
+        self.assertIn("contradictory", state["message"])
 
-    def test_supplied_reset_timestamp_is_informational_for_authorization(self):
+    def test_observation_has_no_reset_time_fields(self):
         supervisor = self.make_supervisor()
-        self.set_quota(supervisor, five_reset=NOW)
-        result, message = supervisor.quota.evaluate("implementation", self.policy["quota"])
-        self.assertEqual(result, "ok")
-        self.assertIn("quota accepted", message)
+        self.set_quota(supervisor)
+        observation = supervisor.quota.snapshot()
+        self.assertNotIn("five_hour_reset_at", observation)
+        self.assertNotIn("weekly_reset_at", observation)
 
     def test_rate_limit_failure_is_not_retried(self):
         def exhausted(role, ticket, run_dir):
@@ -3971,7 +3962,7 @@ class SupervisorTests(unittest.TestCase):
         dashboard = supervisor.dashboard()
 
         self.assertIn("Role: diagnostic · gpt-5.6-sol · reasoning high", dashboard)
-        self.assertIn("Applicable reserve: 5-hour 30% · weekly 20% when supplied", dashboard)
+        self.assertIn("Applicable ranges:", dashboard)
 
     def test_dashboard_has_pipeline_current_and_next_sections(self):
         dashboard = self.make_supervisor().dashboard()
@@ -4019,26 +4010,25 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(status["current_run_elapsed_seconds"], 65)
         self.assertIn("Elapsed: 1m05s", supervisor.dashboard())
 
-    def test_eta_with_insufficient_history(self):
+    def test_dashboard_has_no_quota_forecast(self):
         dashboard = self.make_supervisor().dashboard()
-        self.assertIn("insufficient history", dashboard)
-        self.assertIn("ETA is approximate", dashboard)
+        self.assertNotIn("ETA", dashboard)
+        self.assertNotIn("forecast", dashboard.lower())
 
-    def test_eta_uses_recorded_local_history(self):
+    def test_timing_history_does_not_create_a_quota_forecast(self):
         supervisor = self.make_supervisor()
         supervisor._record_timing("tickets", {"ticket": "T08", "duration_seconds": 600})
         supervisor._record_timing("tickets", {"ticket": "T09", "duration_seconds": 1200})
         dashboard = supervisor.dashboard()
-        self.assertIn("approximate next-ticket pipeline range", dashboard)
-        self.assertIn("2 local samples", dashboard)
+        self.assertNotIn("ETA", dashboard)
+        self.assertNotIn("forecast", dashboard.lower())
 
     def test_malformed_timing_history_fails_safely(self):
         supervisor = self.make_supervisor()
         supervisor.runtime.mkdir(parents=True, exist_ok=True)
         supervisor.timing_path.write_text("not json", encoding="utf-8")
         dashboard = supervisor.dashboard()
-        self.assertIn("insufficient history", dashboard)
-        self.assertIn("invalid timing data", dashboard)
+        self.assertIn("PROJECT", dashboard)
 
 
 class ColdStartTests(unittest.TestCase):
