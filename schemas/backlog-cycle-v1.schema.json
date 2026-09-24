@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Development Supervisor backlog cycle v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "phase", "prior_epoch_id", "selection", "revisions", "approval", "materialization"],
+  "properties": {
+    "version": {"const": 1},
+    "phase": {"enum": ["BACKLOG_REVIEW", "ARCHITECTURE_REVIEW", "APPROVAL_WAIT", "READY_EPOCH"]},
+    "prior_epoch_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+    "selection": {"type": "object"},
+    "revisions": {"type": "array"},
+    "approval": {"type": ["object", "null"]},
+    "materialization": {"type": ["object", "null"]}
+  }
+}

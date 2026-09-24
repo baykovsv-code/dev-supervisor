@@ -4160,6 +4160,78 @@ class ColdStartTests(unittest.TestCase):
         self.assertFalse((self.root / self.policy["implementation_plan"]).exists())
 
 
+class BacklogCycleTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        git(self.root, "init", "-b", "main")
+        git(self.root, "config", "user.name", "Backlog Test")
+        git(self.root, "config", "user.email", "backlog@example.invalid")
+        (self.root / "docs/architecture/tickets").mkdir(parents=True)
+        (self.root / "docs/architecture/implementation-plan.md").write_text(
+            "| Milestone | Tickets | Gate |\n|---|---|---|\n| 1 done | 01 | done |\n", encoding="utf-8")
+        (self.root / "BACKLOG.md").write_text("B-1: bounded follow-up\n", encoding="utf-8")
+        (self.root / "seed.txt").write_text("seed\n", encoding="utf-8")
+        git(self.root, "add", ".")
+        git(self.root, "commit", "-m", "Seed")
+        policy = json.loads((MODULE_PATH.parent / "tests/fixtures/reference-policy.json").read_text(encoding="utf-8"))
+        policy.update({"implementation_plan": "docs/architecture/implementation-plan.md", "authoritative_documents": ["docs/architecture/implementation-plan.md"], "bootstrap_ticket": "T01", "initial_completed_tickets": [], "verification_commands": []})
+        self.supervisor = Supervisor(self.root, policy=policy, assets_dir=MODULE_PATH.parent, model_runner=FakeModelRunner([]), command_runner=FakeCommandRunner(), now=lambda: NOW)
+        state = self.supervisor.load_state()
+        state["phase"] = "PLAN_COMPLETED"
+        state["plan_epochs"][0]["completion"] = {"ticket": "T01", "commit": git(self.root, "rev-parse", "HEAD")}
+        self.supervisor.save_state(state)
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def _write(self, name, value):
+        path = self.root / name
+        path.write_text(json.dumps(value), encoding="utf-8")
+        return path
+
+    def test_backlog_requires_exact_review_and_approval_before_a_new_epoch(self):
+        selection = self._write("selection.json", {"version": 1, "items": [{"id": "B-1", "source": "BACKLOG.md", "summary": "bounded follow-up"}]})
+        cycle = self.supervisor.begin_backlog_cycle(selection)
+        self.assertEqual(cycle["phase"], "BACKLOG_REVIEW")
+        source_digest = cycle["selection"]["digest"]
+        requirements = self._write("requirements.json", {"version": 1, "kind": "requirements", "selection_digest": source_digest, "parent_revision_digest": source_digest, "content": {"requirements": ["R"], "dependencies": ["none"], "duplicates": ["none"], "readiness": ["ready"], "architecture_impact": ["review required"], "outcomes": [{"item_id": "B-1", "disposition": "accepted", "reason": "bounded"}]}})
+        cycle = self.supervisor.submit_backlog_revision(requirements)
+        self.assertEqual(cycle["phase"], "APPROVAL_WAIT")
+        with self.assertRaisesRegex(SupervisorError, "exact approved"):
+            self.supervisor.materialize_backlog_epoch(self.root / "none", self.root / "none", self.root, self.root / "none")
+        requirements_digest = cycle["revisions"][-1]["digest"]
+        self.supervisor.approve_backlog_requirements(requirements_digest)
+        architecture = self._write("architecture.json", {"version": 1, "kind": "architecture", "selection_digest": source_digest, "parent_revision_digest": requirements_digest, "content": {"alternatives": ["simple"], "selected_design": "minimal", "complexity_rationale": "bounded", "architecture_delta": ["none"], "risks": ["review"]}})
+        cycle = self.supervisor.submit_backlog_revision(architecture)
+        architecture_digest = cycle["revisions"][-1]["digest"]
+        self.supervisor.approve_backlog_architecture(requirements_digest, architecture_digest)
+        plan = self.root / "next-plan.md"
+        index = self.root / "next-index.md"
+        tickets = self.root / "next-tickets"
+        tickets.mkdir()
+        plan.write_text("| Milestone | Tickets | Gate |\n|---|---|---|\n| 2 next | 31 | ready |\n", encoding="utf-8")
+        index.write_text("# next index\n", encoding="utf-8")
+        (tickets / "31-follow-up.md").write_text("# T31\n", encoding="utf-8")
+        lineage = self._write("lineage.json", {"version": 1, "ticket_sources": {"T31": ["B-1"]}})
+        ready = self.supervisor.materialize_backlog_epoch(plan, index, tickets, lineage)
+        self.assertEqual(ready["phase"], "READY_EPOCH")
+        state = self.supervisor.load_state()
+        self.assertEqual((state["phase"], state["current_ticket"]), ("READY", "T31"))
+        self.assertEqual(len(state["plan_epochs"]), 2)
+        self.assertEqual(state["plan_epochs"][0]["completion"]["ticket"], "T01")
+        self.assertEqual(self.supervisor.status()["current_frontier"]["remaining_tickets"], ["T31"])
+
+    def test_backlog_source_change_fails_closed_and_cannot_advance_the_completed_epoch(self):
+        selection = self._write("selection.json", {"version": 1, "items": [{"id": "B-1", "source": "BACKLOG.md", "summary": "bounded follow-up"}]})
+        self.supervisor.begin_backlog_cycle(selection)
+        (self.root / "BACKLOG.md").write_text("changed\n", encoding="utf-8")
+        with self.assertRaisesRegex(SupervisorError, "source changed"):
+            self.supervisor.backlog_cycle_status()
+        state = self.supervisor.load_state()
+        self.assertEqual((state["phase"], len(state["plan_epochs"])), ("PLAN_COMPLETED", 1))
+
+
 class ExistingProjectAdmissionTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()

@@ -80,6 +80,9 @@ ADMISSION_STATUSES = {"compatible", "conditionally_compatible", "incompatible"}
 ADMISSION_DOCUMENT_FIELDS = {"path", "external_id", "digest"}
 ADMISSION_MANIFEST_FIELDS = {"version", "source_documents", "external_identifiers", "mapping"}
 ADMISSION_MAPPING_FIELDS = {"status", "covered_requirements", "gaps", "contradictions", "unknowns"}
+BACKLOG_CYCLE_STATE_NAME = "backlog-cycle.json"
+BACKLOG_CYCLE_DIRECTORY = "backlog-cycles"
+BACKLOG_CYCLE_PHASES = {"BACKLOG_REVIEW", "ARCHITECTURE_REVIEW", "APPROVAL_WAIT", "READY_EPOCH"}
 QUOTA_STATES = {"QUOTA_CHECK_REQUIRED", "QUOTA_LOW", "QUOTA_EXHAUSTED"}
 RATE_LIMIT_MARKERS = (
     "rate limit", "rate_limit", "usage limit", "usage_limit", "quota exhausted",
@@ -1993,6 +1996,251 @@ class Supervisor:
         }[state["phase"]]
         return {**state, "required_human_action": action}
 
+    # Backlog review is deliberately a separate record from the immutable plan
+    # epoch.  In particular, a completed plan never becomes executable merely
+    # because somebody has put text in BACKLOG.md.
+    @property
+    def backlog_cycle_path(self) -> Path:
+        return self.runtime / BACKLOG_CYCLE_STATE_NAME
+
+    def _backlog_cycle_artifact(self, relative: str) -> Path:
+        candidate = Path(relative)
+        if candidate.is_absolute() or ".." in candidate.parts:
+            raise SupervisorError("backlog-cycle artifact path is unsafe")
+        return self.runtime / BACKLOG_CYCLE_DIRECTORY / candidate
+
+    @staticmethod
+    def _backlog_content_error(kind: str, content: Any, selected: set[str]) -> str | None:
+        if kind == "requirements":
+            required = {"requirements", "dependencies", "duplicates", "readiness", "architecture_impact", "outcomes"}
+            if not isinstance(content, dict) or set(content) != required:
+                return "backlog requirements revision must contain exactly the required analysis fields"
+            for name in required - {"outcomes"}:
+                if not isinstance(content[name], list) or any(not isinstance(item, str) or not item.strip() for item in content[name]):
+                    return f"backlog requirements field {name!r} must be an array of nonempty strings"
+            outcomes = content["outcomes"]
+            if not isinstance(outcomes, list) or len(outcomes) != len(selected):
+                return "backlog outcomes must give exactly one disposition for every selected item"
+            seen: set[str] = set()
+            for outcome in outcomes:
+                if not isinstance(outcome, dict) or set(outcome) != {"item_id", "disposition", "reason"}:
+                    return "backlog outcome must contain item_id, disposition, and reason"
+                if outcome.get("item_id") not in selected or outcome["item_id"] in seen:
+                    return "backlog outcomes must name each selected item exactly once"
+                if outcome.get("disposition") not in {"accepted", "rejected", "deferred", "duplicate", "missing_information"}:
+                    return "backlog outcome has an unsupported disposition"
+                if not isinstance(outcome.get("reason"), str) or not outcome["reason"].strip():
+                    return "backlog outcome reason must be nonempty"
+                seen.add(outcome["item_id"])
+            return None if seen == selected else "backlog outcomes omit a selected item"
+        required = {"alternatives", "selected_design", "complexity_rationale", "architecture_delta", "risks"}
+        if not isinstance(content, dict) or set(content) != required:
+            return "backlog architecture revision must contain exactly the required delta fields"
+        if not isinstance(content["selected_design"], str) or not content["selected_design"].strip():
+            return "backlog architecture selected_design must be nonempty"
+        if not isinstance(content["complexity_rationale"], str) or not content["complexity_rationale"].strip():
+            return "backlog architecture complexity_rationale must be nonempty"
+        for name in required - {"selected_design", "complexity_rationale"}:
+            if not isinstance(content[name], list) or any(not isinstance(item, str) or not item.strip() for item in content[name]):
+                return f"backlog architecture field {name!r} must be an array of nonempty strings"
+        return None
+
+    def _load_backlog_cycle(self) -> dict[str, Any]:
+        value = read_json(self.backlog_cycle_path)
+        required = {"version", "phase", "prior_epoch_id", "selection", "revisions", "approval", "materialization"}
+        if set(value) != required or value.get("version") != 1 or value.get("phase") not in BACKLOG_CYCLE_PHASES:
+            raise SupervisorError("backlog-cycle state is malformed or has an unsupported version")
+        selection = value.get("selection")
+        if not isinstance(selection, dict) or set(selection) != {"digest", "items"} or not re.fullmatch(r"[0-9a-f]{64}", str(selection.get("digest"))):
+            raise SupervisorError("backlog selection identity is malformed")
+        items = selection.get("items")
+        if not isinstance(items, list) or not items:
+            raise SupervisorError("backlog selection must be a nonempty bounded list")
+        ids: set[str] = set()
+        for item in items:
+            if not isinstance(item, dict) or set(item) != {"id", "source", "source_digest", "summary"}:
+                raise SupervisorError("backlog selection item is malformed")
+            if not isinstance(item["id"], str) or not item["id"].strip() or item["id"] in ids:
+                raise SupervisorError("backlog selection item identifiers must be unique and nonempty")
+            if not isinstance(item["source"], str) or not isinstance(item["summary"], str) or not item["summary"].strip() or not re.fullmatch(r"[0-9a-f]{64}", str(item["source_digest"])):
+                raise SupervisorError("backlog selection item lineage is malformed")
+            source = Path(item["source"])
+            if source.is_absolute() or ".." in source.parts or not (self.root / source).is_file() or hashlib.sha256((self.root / source).read_bytes()).hexdigest() != item["source_digest"]:
+                raise SupervisorError("backlog source changed after selection; begin a new bounded review")
+            ids.add(item["id"])
+        if content_checksum(items) != selection["digest"]:
+            raise SupervisorError("backlog selection was changed after review began")
+        revisions = value.get("revisions")
+        if not isinstance(revisions, list):
+            raise SupervisorError("backlog revision lineage is malformed")
+        last_requirements = None
+        last_architecture = None
+        for revision in revisions:
+            if not isinstance(revision, dict) or set(revision) != {"kind", "digest", "parent_digest", "selection_digest", "artifact"}:
+                raise SupervisorError("backlog revision identity is malformed")
+            if revision.get("kind") not in {"requirements", "architecture"} or revision.get("selection_digest") != selection["digest"]:
+                raise SupervisorError("backlog revision kind or selection identity is malformed")
+            proposal = read_json(self._backlog_cycle_artifact(revision["artifact"]))
+            if content_checksum(proposal) != revision.get("digest") or proposal.get("kind") != revision["kind"]:
+                raise SupervisorError("backlog revision artifact was changed or does not match its digest")
+            expected = selection["digest"] if revision["kind"] == "requirements" else last_requirements
+            if revision.get("parent_digest") != expected:
+                raise SupervisorError("backlog revision lineage is broken")
+            error = self._backlog_content_error(revision["kind"], proposal.get("content"), ids)
+            if error:
+                raise SupervisorError(error)
+            if revision["kind"] == "requirements": last_requirements = revision["digest"]
+            else: last_architecture = revision["digest"]
+        approval = value.get("approval")
+        if approval is not None and (
+            not isinstance(approval, dict) or set(approval) != {"requirements_digest", "architecture_digest"}
+            or approval.get("requirements_digest") != last_requirements
+            or approval.get("architecture_digest") not in ({None, last_architecture} if last_architecture is not None else {None})
+        ):
+            raise SupervisorError("backlog approval does not name the exact current revisions")
+        if value["phase"] == "READY_EPOCH" and (approval is None or not isinstance(value.get("materialization"), dict)):
+            raise SupervisorError("ready backlog epoch requires exact approval and materialization evidence")
+        return value
+
+    def begin_backlog_cycle(self, selection_path: Path) -> dict[str, Any]:
+        state = self.load_state()
+        if state.get("version") != STATE_VERSION or state.get("phase") != "PLAN_COMPLETED":
+            raise SupervisorError("backlog intake requires a completed immutable plan epoch")
+        if self.backlog_cycle_path.exists():
+            raise SupervisorError("a backlog cycle already exists; resume or materialize its recorded review")
+        raw = read_json(selection_path.expanduser().resolve())
+        if set(raw) != {"version", "items"} or raw.get("version") != 1 or not isinstance(raw.get("items"), list) or not raw["items"]:
+            raise SupervisorError("backlog selection must be a version 1 nonempty items object")
+        items = []
+        for supplied in raw["items"]:
+            if not isinstance(supplied, dict) or set(supplied) != {"id", "source", "summary"}:
+                raise SupervisorError("backlog selection items must contain id, source, and summary")
+            if not all(isinstance(supplied.get(key), str) and supplied[key].strip() for key in ("id", "source", "summary")):
+                raise SupervisorError("backlog selection item id, source, and summary must be nonempty strings")
+            source = Path(supplied["source"])
+            if source.is_absolute() or ".." in source.parts or not (self.root / source).is_file():
+                raise SupervisorError("backlog selection source must be an existing safe repository-relative file")
+            items.append({**supplied, "source_digest": hashlib.sha256((self.root / source).read_bytes()).hexdigest()})
+        if len({item["id"] for item in items}) != len(items):
+            raise SupervisorError("backlog selection item identifiers must be unique")
+        cycle = {"version": 1, "phase": "BACKLOG_REVIEW", "prior_epoch_id": self._current_epoch(state)["epoch_id"],
+                 "selection": {"digest": content_checksum(items), "items": items}, "revisions": [], "approval": None, "materialization": None}
+        atomic_write_json(self.backlog_cycle_path, cycle)
+        return cycle
+
+    def submit_backlog_revision(self, proposal_path: Path) -> dict[str, Any]:
+        cycle = self._load_backlog_cycle()
+        if cycle["phase"] not in {"BACKLOG_REVIEW", "ARCHITECTURE_REVIEW", "APPROVAL_WAIT"}:
+            raise SupervisorError("backlog proposals are closed after a ready epoch")
+        proposal = read_json(proposal_path.expanduser().resolve())
+        expected_kind = "architecture" if cycle["phase"] == "ARCHITECTURE_REVIEW" else "requirements"
+        if set(proposal) != {"version", "kind", "selection_digest", "parent_revision_digest", "content"} or proposal.get("version") != 1 or proposal.get("kind") != expected_kind:
+            raise SupervisorError(f"backlog {expected_kind} review requires a matching version 1 proposal")
+        if proposal.get("selection_digest") != cycle["selection"]["digest"]:
+            raise SupervisorError("backlog proposal does not name the bounded selected scope")
+        previous = cycle["revisions"][-1] if cycle["revisions"] else None
+        expected_parent = cycle["selection"]["digest"] if expected_kind == "requirements" else cycle["approval"]["requirements_digest"]
+        if proposal.get("parent_revision_digest") != expected_parent:
+            raise SupervisorError("backlog proposal parent does not match reviewed lineage")
+        error = self._backlog_content_error(expected_kind, proposal.get("content"), {item["id"] for item in cycle["selection"]["items"]})
+        if error: raise SupervisorError(error)
+        digest = content_checksum(proposal)
+        if previous and previous.get("digest") == digest: return cycle
+        artifact = f"revisions/{digest}.json"
+        self._write_cold_start_bytes(self._backlog_cycle_artifact(artifact), canonical_json_bytes(proposal))
+        cycle["revisions"].append({"kind": expected_kind, "digest": digest, "parent_digest": expected_parent, "selection_digest": cycle["selection"]["digest"], "artifact": artifact})
+        # A new requirements revision changes scope analysis and invalidates all
+        # approvals.  An architecture revision remains explicitly rooted in the
+        # already approved requirements version, so retain only that identity.
+        cycle["approval"] = (
+            {"requirements_digest": expected_parent, "architecture_digest": None}
+            if expected_kind == "architecture" else None
+        )
+        cycle["phase"] = "APPROVAL_WAIT"
+        atomic_write_json(self.backlog_cycle_path, cycle)
+        return cycle
+
+    def approve_backlog_requirements(self, requirements_digest: str) -> dict[str, Any]:
+        cycle = self._load_backlog_cycle()
+        revision = cycle["revisions"][-1] if cycle["revisions"] else None
+        if cycle["phase"] != "APPROVAL_WAIT" or not isinstance(revision, dict) or revision.get("kind") != "requirements" or revision.get("digest") != requirements_digest:
+            raise SupervisorError("backlog requirements approval must name the exact current requirements revision")
+        cycle["approval"] = {"requirements_digest": requirements_digest, "architecture_digest": None}
+        cycle["phase"] = "ARCHITECTURE_REVIEW"
+        atomic_write_json(self.backlog_cycle_path, cycle)
+        return cycle
+
+    def approve_backlog_architecture(self, requirements_digest: str, architecture_digest: str) -> dict[str, Any]:
+        cycle = self._load_backlog_cycle()
+        revision = cycle["revisions"][-1] if cycle["revisions"] else None
+        approval = cycle.get("approval")
+        if cycle["phase"] != "APPROVAL_WAIT" or not isinstance(approval, dict) or approval.get("requirements_digest") != requirements_digest or not isinstance(revision, dict) or revision.get("kind") != "architecture" or revision.get("digest") != architecture_digest:
+            raise SupervisorError("backlog architecture approval must name exact requirements and architecture revisions")
+        cycle["approval"] = {"requirements_digest": requirements_digest, "architecture_digest": architecture_digest}
+        atomic_write_json(self.backlog_cycle_path, cycle)
+        return cycle
+
+    def materialize_backlog_epoch(self, plan_source: Path, index_source: Path, tickets_directory: Path, lineage_path: Path) -> dict[str, Any]:
+        """Create a new immutable execution frontier only after exact approval."""
+        cycle = self._load_backlog_cycle()
+        approval = cycle.get("approval")
+        if cycle["phase"] != "APPROVAL_WAIT" or not isinstance(approval, dict) or not isinstance(approval.get("architecture_digest"), str):
+            raise SupervisorError("backlog epoch materialization requires exact approved requirements and architecture revisions")
+        state = self.load_state()
+        if state.get("phase") != "PLAN_COMPLETED" or self._current_epoch(state)["epoch_id"] != cycle["prior_epoch_id"]:
+            raise SupervisorError("backlog epoch materialization requires the unchanged completed source epoch")
+        plan_bytes = plan_source.expanduser().resolve().read_bytes()
+        index_bytes = index_source.expanduser().resolve().read_bytes()
+        if not plan_bytes or not index_bytes or not tickets_directory.is_dir():
+            raise SupervisorError("backlog epoch requires nonempty plan/index sources and a ticket directory")
+        tickets = self._parse_plan_tickets(plan_bytes.decode("utf-8"))
+        lineage = read_json(lineage_path.expanduser().resolve())
+        if set(lineage) != {"version", "ticket_sources"} or lineage.get("version") != 1 or not isinstance(lineage.get("ticket_sources"), dict) or set(lineage["ticket_sources"]) != set(tickets):
+            raise SupervisorError("backlog ticket lineage must map every new plan ticket exactly once")
+        requirements_revision = next((item for item in reversed(cycle["revisions"]) if item["kind"] == "requirements"), None)
+        if requirements_revision is None:
+            raise SupervisorError("backlog materialization has no reviewed requirements disposition")
+        accepted = {
+            outcome["item_id"] for outcome in read_json(
+                self._backlog_cycle_artifact(requirements_revision["artifact"])
+            )["content"]["outcomes"] if outcome["disposition"] == "accepted"
+        }
+        for ticket, sources in lineage["ticket_sources"].items():
+            if not isinstance(sources, list) or not sources or any(source not in accepted for source in sources):
+                raise SupervisorError("every new ticket must have lineage only to accepted selected backlog items")
+            source_ticket = tickets_directory / f"{ticket[1:]}"  # accept the established 06-name prefix convention below
+            matches = list(tickets_directory.glob(f"{ticket[1:]}-*.md"))
+            if source_ticket.exists() or len(matches) != 1:
+                raise SupervisorError(f"backlog ticket source directory must contain exactly one {ticket} ticket file")
+        epoch_id = uuid.uuid4().hex
+        base = f"{epoch_id}"
+        self._write_cold_start_bytes(self._backlog_cycle_artifact(f"{base}/implementation-plan.md"), plan_bytes)
+        self._write_cold_start_bytes(self._backlog_cycle_artifact(f"{base}/requirements-index.md"), index_bytes)
+        for ticket in tickets:
+            source = next(tickets_directory.glob(f"{ticket[1:]}-*.md"))
+            self._write_cold_start_bytes(self._backlog_cycle_artifact(f"{base}/tickets/{source.name}"), source.read_bytes())
+        materialization = {"epoch_id": epoch_id, "plan": f"{base}/implementation-plan.md", "index": f"{base}/requirements-index.md", "tickets": f"{base}/tickets", "ticket_sources": lineage["ticket_sources"], "plan_digest": hashlib.sha256(plan_bytes).hexdigest(), "index_digest": hashlib.sha256(index_bytes).hexdigest()}
+        # Do not change either completed epoch; append a new linked epoch and
+        # make it ready only after all immutable artifacts have been written.
+        state["plan_epochs"].append({"epoch_id": epoch_id, "prior_epoch_id": cycle["prior_epoch_id"], "created_at": isoformat(self.now()), "plan_digest": materialization["plan_digest"], "tickets": tickets, "completion": None})
+        state["current_plan_epoch_id"] = epoch_id
+        state["completed_tickets"] = []
+        self.transition(state, "READY", f"Approved backlog epoch {epoch_id} is ready; no implementation was started.", current_ticket=tickets[0], active_run=None, pending_commit=None, starting_head=None)
+        cycle["materialization"] = materialization
+        cycle["phase"] = "READY_EPOCH"
+        atomic_write_json(self.backlog_cycle_path, cycle)
+        return cycle
+
+    def backlog_cycle_status(self) -> dict[str, Any]:
+        cycle = self._load_backlog_cycle()
+        action = {
+            "BACKLOG_REVIEW": "submit a bounded requirements/dependency/readiness analysis",
+            "ARCHITECTURE_REVIEW": "submit an architecture-delta correction for the approved requirements revision",
+            "APPROVAL_WAIT": "supply the exact version-bound human approval required by the latest revision",
+            "READY_EPOCH": "the approved next epoch is ready; implementation remains separately controlled",
+        }[cycle["phase"]]
+        return {**cycle, "required_human_action": action}
+
     def initial_state(self) -> dict[str, Any]:
         self.git.require_repository()
         epoch = self._new_plan_epoch()
@@ -2387,13 +2635,19 @@ class Supervisor:
 
     def status(self) -> dict[str, Any]:
         state = self.load_state(read_only=True)
+        backlog_cycle = None
+        if self.backlog_cycle_path.exists():
+            backlog_cycle = self.backlog_cycle_status()
         try:
             quota = self.quota.snapshot()
         except SupervisorError:
             quota = None
         active = state.get("active_run") or {}
+        epoch = None
+        if state.get("version") == STATE_VERSION:
+            epoch = self._current_epoch(state)
         try:
-            plan = self._plan_tickets()
+            plan = epoch["tickets"] if epoch is not None and epoch.get("prior_epoch_id") is not None else self._plan_tickets()
         except SupervisorError:
             plan = []
         completed = [ticket for ticket in plan if ticket in state.get("completed_tickets", [])]
@@ -2401,9 +2655,6 @@ class Supervisor:
         upcoming: list[str] = []
         if state.get("phase") != "PLAN_COMPLETED" and current in plan:
             upcoming = plan[plan.index(current) + 1:plan.index(current) + 5]
-        epoch = None
-        if state.get("version") == STATE_VERSION:
-            epoch = self._current_epoch(state)
         final_result = epoch.get("completion") if epoch is not None else None
         phase_roles = {
             "ARCHITECTURE_PENDING": "architecture",
@@ -2428,6 +2679,8 @@ class Supervisor:
         forecast = self._forecast(history, history_error)
         return {
             "phase": state["phase"],
+            "backlog_cycle_phase": backlog_cycle["phase"] if backlog_cycle is not None else None,
+            "backlog_cycle": backlog_cycle,
             "current_ticket": current,
             "completed_tickets": completed,
             "upcoming_tickets": upcoming,
@@ -7383,6 +7636,23 @@ def build_parser() -> argparse.ArgumentParser:
     cold_start_plan.add_argument("--source", type=Path, required=True)
     cold_start_plan.add_argument("--requirements-version", required=True)
     cold_start_plan.add_argument("--architecture-version", required=True)
+    backlog = subparsers.add_parser("backlog", help="review bounded backlog work into a separately approved next epoch")
+    backlog_sub = backlog.add_subparsers(dest="backlog_command", required=True)
+    backlog_begin = backlog_sub.add_parser("begin", help="select bounded non-executable backlog items after plan completion")
+    backlog_begin.add_argument("--selection", type=Path, required=True)
+    backlog_sub.add_parser("status", help="show backlog review state and required human action")
+    backlog_submit = backlog_sub.add_parser("submit", help="archive a requirements or architecture-delta revision")
+    backlog_submit.add_argument("--proposal", type=Path, required=True)
+    backlog_requirements = backlog_sub.add_parser("approve-requirements", help="approve the exact backlog requirements revision")
+    backlog_requirements.add_argument("--requirements-version", required=True)
+    backlog_architecture = backlog_sub.add_parser("approve-architecture", help="approve exact backlog requirements and architecture revisions")
+    backlog_architecture.add_argument("--requirements-version", required=True)
+    backlog_architecture.add_argument("--architecture-version", required=True)
+    backlog_materialize = backlog_sub.add_parser("materialize", help="create the immutable next epoch from exact approvals")
+    backlog_materialize.add_argument("--plan-source", type=Path, required=True)
+    backlog_materialize.add_argument("--index-source", type=Path, required=True)
+    backlog_materialize.add_argument("--tickets-directory", type=Path, required=True)
+    backlog_materialize.add_argument("--ticket-lineage", type=Path, required=True)
     return parser
 
 
@@ -7456,6 +7726,23 @@ def main(arguments: list[str] | None = None) -> int:
                         args.source, args.requirements_version, args.architecture_version,
                     )
             print_json({**state, "required_human_action": supervisor.cold_start_status()["required_human_action"]})
+            return 0
+        if args.command == "backlog":
+            with supervisor.operation_lock():
+                if args.backlog_command == "begin":
+                    result = supervisor.begin_backlog_cycle(args.selection)
+                elif args.backlog_command == "status":
+                    print_json(supervisor.backlog_cycle_status())
+                    return 0
+                elif args.backlog_command == "submit":
+                    result = supervisor.submit_backlog_revision(args.proposal)
+                elif args.backlog_command == "approve-requirements":
+                    result = supervisor.approve_backlog_requirements(args.requirements_version)
+                elif args.backlog_command == "approve-architecture":
+                    result = supervisor.approve_backlog_architecture(args.requirements_version, args.architecture_version)
+                else:
+                    result = supervisor.materialize_backlog_epoch(args.plan_source, args.index_source, args.tickets_directory, args.ticket_lineage)
+            print_json({**result, "required_human_action": supervisor.backlog_cycle_status()["required_human_action"]})
             return 0
         if args.command in {"state-migration-dry-run", "state-migration-apply", "state-migration-rollback"}:
             with supervisor.operation_lock():
