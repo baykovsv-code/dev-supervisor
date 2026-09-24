@@ -17,6 +17,7 @@ from pathlib import Path
 import re
 import signal
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -3057,6 +3058,13 @@ class Supervisor:
                 return ["operator must reconcile the failed diagnostic state; automatic resume is unavailable"]
             if phase == "SCOPE_BLOCKED" and self._scope_blocked_recovery_error(state) is not None:
                 return ["operator must reconcile the protected-scope checkpoint; automatic resume is unavailable"]
+            if phase == "VERIFICATION_FAILED" and self._failed_host_verification(
+                state.get("active_run") or {}
+            ) is None:
+                return [
+                    "inspect the preserved deterministic verification failure; automatic retry is unavailable",
+                    "./dev recover-generic-verification-failure",
+                ]
             return ["inspect the recorded diagnostic and preserved changes", "./dev resume when the documented condition is safe"]
         if phase == "VERIFYING":
             return ["finish deterministic verification", "scope gate", "commit if every gate passes", "quota/checkpoint gate", "advance ticket"]
@@ -3090,6 +3098,11 @@ class Supervisor:
         if state.get("phase") == "DIAGNOSTIC_FAILED" and self._diagnostic_failed_recovery_error(state) is not None:
             return None
         if state.get("phase") == "SCOPE_BLOCKED" and self._scope_blocked_recovery_error(state) is not None:
+            return None
+        if (
+            state.get("phase") == "VERIFICATION_FAILED"
+            and self._failed_host_verification(state.get("active_run") or {}) is None
+        ):
             return None
         return "./dev resume"
 
@@ -7045,6 +7058,167 @@ class Supervisor:
             },
         )
 
+    def _generic_verification_failure_checkpoint(
+        self, state: dict[str, Any], *, require_phase: bool = True,
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        """Validate the immutable evidence needed to open generic repair.
+
+        This deliberately does not reuse the host-verification reconciliation
+        predicate.  A mandatory host failure has additional evidence rules and
+        must remain on that stricter path.
+        """
+        if require_phase and state.get("phase") != "VERIFICATION_FAILED":
+            return None, "generic verification recovery requires VERIFICATION_FAILED"
+        active = state.get("active_run")
+        ticket = state.get("current_ticket")
+        if not isinstance(active, dict) or not isinstance(ticket, str) or not ticket:
+            return None, "current ticket or failed run is missing"
+        if self._failed_host_verification(active) is not None:
+            return None, "mandatory host-verification failures require their stricter reconciliation path"
+        run_id = active.get("id")
+        files = active.get("changed_files")
+        fingerprint = active.get("post_invocation_fingerprint")
+        starting_head = active.get("starting_head")
+        if (
+            active.get("role") != "implementation"
+            or active.get("ticket") != ticket
+            or not isinstance(run_id, str)
+            or Path(run_id).name != run_id
+            or not isinstance(starting_head, str)
+            or not starting_head
+            or self.git.head() != starting_head
+            or self.git.branch() != self.policy["expected_branch"]
+            or not isinstance(files, list)
+            or files != sorted(set(files))
+            or not isinstance(fingerprint, str)
+            or not fingerprint
+            or not self._model_checkpoint_matches(active)
+        ):
+            return None, "model checkpoint, starting HEAD, or changed-file identity is stale or malformed"
+
+        snapshot = self._product_snapshot()
+        if [item.get("path") for item in snapshot.get("entries", [])] != files:
+            return None, "changed-file checkpoint no longer matches the preserved product snapshot"
+
+        results = active.get("verification_results")
+        run_dir = self.runs_dir / run_id
+        checks_path = run_dir / "checks.json"
+        if not isinstance(results, list) or not checks_path.is_file() or checks_path.is_symlink():
+            return None, "durable deterministic verification results are unavailable or unsafe"
+        try:
+            durable_results = json.loads(checks_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None, "durable deterministic verification results are malformed"
+        if not isinstance(durable_results, list) or durable_results != results:
+            return None, "durable deterministic verification results contradict the preserved checkpoint"
+
+        failed = [item for item in results if isinstance(item, dict) and item.get("passed") is False]
+        if len(failed) != 1:
+            return None, "generic recovery requires exactly one recorded failed deterministic check"
+        failure = failed[0]
+        configured = [
+            check for check in self.policy.get("ticket_verification_commands", {}).get(ticket, [])
+            if check.get("name") == failure.get("name") and check.get("command") == failure.get("command")
+        ]
+        if len(configured) != 1:
+            return None, "failed deterministic check is absent from or ambiguous in the current ticket configuration"
+        check = configured[0]
+        if check.get("mandatory") is True and check.get("host_capabilities"):
+            return None, "mandatory host-verification failures require their stricter reconciliation path"
+        if (
+            type(failure.get("exit_status")) is not int
+            or failure["exit_status"] == 0
+            or not isinstance(failure.get("log"), str)
+            or Path(failure["log"]).name != failure["log"]
+        ):
+            return None, "failed deterministic check evidence is malformed"
+        log_path = run_dir / failure["log"]
+        try:
+            log_stat = log_path.lstat()
+        except OSError:
+            return None, "failed deterministic check log is unavailable"
+        if not stat.S_ISREG(log_stat.st_mode) or log_stat.st_size <= 0:
+            return None, "failed deterministic check log is unsafe or empty"
+        try:
+            log_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None, "failed deterministic check log is unreadable"
+        return {
+            "ticket": ticket,
+            "run_id": run_id,
+            "starting_head": starting_head,
+            "fingerprint": fingerprint,
+            "files": list(files),
+            "failed_check": failure["name"],
+            "failed_command": list(failure["command"]),
+            "failure_log": str(log_path.relative_to(self.root)),
+            "failure": deepcopy(failure),
+        }, None
+
+    def _append_audit_event(self, state: dict[str, Any], kind: str, payload: dict[str, Any]) -> dict[str, Any]:
+        events = state.setdefault("audit_events", [])
+        if not isinstance(events, list):
+            raise SupervisorError("state audit history is malformed")
+        predecessor: str | None = None
+        for recorded in events:
+            if not isinstance(recorded, dict) or recorded != audit_event(
+                recorded.get("kind"), recorded.get("payload"), predecessor,
+            ):
+                raise SupervisorError("state audit history is malformed")
+            predecessor = recorded["event_id"]
+        event = audit_event(kind, payload, predecessor)
+        if event not in events:
+            events.append(event)
+        return event
+
+    def recover_generic_verification_failure(self) -> dict[str, Any]:
+        """Open one validated generic verification failure for bounded repair only."""
+        state = self.load_state()
+        context = state.get("recovery_context") or {}
+        if state.get("phase") == "RECOVER_MODEL" and context.get("kind") == "generic_verification_failure":
+            evidence, error = self._generic_verification_failure_checkpoint(state, require_phase=False)
+            if error is not None or evidence is None or context.get("recovery_evidence") != evidence:
+                raise SupervisorError("generic verification recovery checkpoint is stale or contradictory")
+            matching = [
+                event for event in state.get("audit_events", [])
+                if isinstance(event, dict)
+                and event.get("kind") == "generic_verification_failure_recovery"
+                and event.get("payload") == evidence
+            ]
+            if len(matching) != 1:
+                raise SupervisorError("generic verification recovery audit evidence is missing or ambiguous")
+            # Reuse the append-only validator without appending: a malformed
+            # predecessor chain is not durable recovery evidence.
+            events = state.get("audit_events")
+            if not isinstance(events, list):
+                raise SupervisorError("generic verification recovery audit evidence is malformed")
+            predecessor: str | None = None
+            for recorded in events:
+                if not isinstance(recorded, dict) or recorded != audit_event(
+                    recorded.get("kind"), recorded.get("payload"), predecessor,
+                ):
+                    raise SupervisorError("generic verification recovery audit evidence is malformed")
+                predecessor = recorded["event_id"]
+            return state
+        evidence, error = self._generic_verification_failure_checkpoint(state)
+        if error is not None or evidence is None:
+            raise SupervisorError("generic verification recovery is unavailable: " + str(error))
+        self._append_audit_event(state, "generic_verification_failure_recovery", evidence)
+        self.transition(
+            state, "RECOVER_MODEL",
+            "Validated generic deterministic verification failure is ready for bounded same-ticket repair; "
+            "a separately quota-authorized model invocation is required.",
+            recovery_context={
+                "kind": "generic_verification_failure", "role": "implementation",
+                "ticket": evidence["ticket"], "starting_head": evidence["starting_head"],
+                "fingerprint": evidence["fingerprint"], "prior_run_id": evidence["run_id"],
+                "reason": "generic_deterministic_verification_failure",
+                "preserved_files": evidence["files"], "failed_verification": evidence["failure"],
+                "recovery_evidence": evidence,
+            },
+        )
+        return state
+
     def recover_verification_failure(self) -> dict[str, Any]:
         """Reconcile a falsely blocked, content-identical host verification failure."""
         state = self.load_state()
@@ -7424,6 +7598,11 @@ class Supervisor:
             return state
         if state["phase"] == "VERIFICATION_FAILED":
             active = state.get("active_run") or {}
+            # Generic deterministic failures are intentionally inert.  Retrying
+            # their failed check would turn an unchanged checkpoint into a loop;
+            # only the separately audited operator action may open repair.
+            if self._failed_host_verification(active) is None:
+                return state
             if not self._model_checkpoint_matches(active):
                 self.transition(
                     state, "GIT_BLOCKED",
@@ -7834,6 +8013,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="reconcile a content-identical preserved host verification failure to implementation recovery",
     )
     subparsers.add_parser(
+        "recover-generic-verification-failure",
+        help="validate and explicitly open one preserved generic verification failure for bounded repair",
+    )
+    subparsers.add_parser(
         "reconcile-verification-evidence",
         help="re-evaluate one recorded exit-zero host check with the current deterministic evidence policy",
     )
@@ -8087,6 +8270,8 @@ def main(arguments: list[str] | None = None) -> int:
                 state = supervisor.recover_environment(args.capability)
             elif args.command == "recover-verification-failure":
                 state = supervisor.recover_verification_failure()
+            elif args.command == "recover-generic-verification-failure":
+                state = supervisor.recover_generic_verification_failure()
             elif args.command == "reconcile-verification-evidence":
                 state = supervisor.reconcile_verification_evidence()
             else:

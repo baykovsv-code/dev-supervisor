@@ -331,6 +331,76 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(state["phase"], "VERIFICATION_FAILED")
         return supervisor, runner, commands, state
 
+    def failed_generic_checkpoint(self):
+        policy = deepcopy(self.policy)
+        policy["ticket_verification_commands"] = {
+            "T10": [{"name": "ticket generic check", "command": ["ticket-check"]}],
+        }
+
+        def action(role, ticket, run_dir):
+            (self.root / "apps").mkdir(exist_ok=True)
+            (self.root / "apps/search.py").write_text("model content\n", encoding="utf-8")
+            return InvocationResult(0, report(role, ticket, files=["apps/search.py"]), {})
+
+        runner = FakeModelRunner([action])
+        commands = FakeCommandRunner(statuses=[0, 1], outputs=["generic: ok\n", "ticket check failed\n"])
+        supervisor = self.make_supervisor(runner, commands, policy)
+        self.set_quota(supervisor)
+        state = supervisor.run()
+        self.assertEqual(state["phase"], "VERIFICATION_FAILED")
+        return supervisor, runner, commands, state
+
+    def test_generic_verification_failure_resume_is_inert_until_explicit_recovery(self):
+        supervisor, runner, commands, failed = self.failed_generic_checkpoint()
+        state_bytes = supervisor.state_path.read_bytes()
+
+        resumed = supervisor.resume()
+
+        self.assertEqual(resumed["phase"], "VERIFICATION_FAILED")
+        self.assertEqual(supervisor.state_path.read_bytes(), state_bytes)
+        self.assertEqual(runner.calls, [("implementation", "T10")])
+        self.assertEqual(commands.calls, 2)
+        self.assertIn(
+            "./dev recover-generic-verification-failure", supervisor._next_actions(resumed),
+        )
+        self.assertIsNone(supervisor.advertised_resume_command(resumed))
+
+    def test_generic_verification_recovery_audits_once_without_quota_model_or_check(self):
+        supervisor, runner, commands, failed = self.failed_generic_checkpoint()
+        quota_before = (self.root / ".dev-supervisor/quota.json").read_bytes()
+
+        recovered = supervisor.recover_generic_verification_failure()
+        repeated = supervisor.recover_generic_verification_failure()
+
+        self.assertEqual((recovered["phase"], repeated["phase"]), ("RECOVER_MODEL", "RECOVER_MODEL"))
+        events = [item for item in repeated["audit_events"] if item["kind"] == "generic_verification_failure_recovery"]
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["payload"]["run_id"], failed["active_run"]["id"])
+        self.assertEqual(events[0]["payload"]["failed_check"], "ticket generic check")
+        self.assertEqual((self.root / ".dev-supervisor/quota.json").read_bytes(), quota_before)
+        self.assertEqual(runner.calls, [("implementation", "T10")])
+        self.assertEqual(commands.calls, 2)
+
+    def test_generic_verification_recovery_rejects_configuration_drift_without_mutation(self):
+        supervisor, _, _, failed = self.failed_generic_checkpoint()
+        state_bytes = supervisor.state_path.read_bytes()
+        supervisor.policy["ticket_verification_commands"]["T10"][0]["command"] = ["changed-check"]
+
+        with self.assertRaisesRegex(SupervisorError, "current ticket configuration"):
+            supervisor.recover_generic_verification_failure()
+
+        self.assertEqual(supervisor.state_path.read_bytes(), state_bytes)
+        self.assertEqual(supervisor.load_state(read_only=True)["phase"], "VERIFICATION_FAILED")
+
+    def test_generic_verification_recovery_cannot_reconcile_mandatory_host_failure(self):
+        supervisor, _, _, _ = self.failed_host_checkpoint()
+        state_bytes = supervisor.state_path.read_bytes()
+
+        with self.assertRaisesRegex(SupervisorError, "mandatory host-verification"):
+            supervisor.recover_generic_verification_failure()
+
+        self.assertEqual(supervisor.state_path.read_bytes(), state_bytes)
+
     @staticmethod
     def diagnostic_report(ticket, classification, run_ids):
         return {
