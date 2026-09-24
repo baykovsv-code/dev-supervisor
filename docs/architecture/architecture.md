@@ -138,13 +138,39 @@ stops; it is never guessed.
 
 For the current extraction, `personal-assistant` remains at its existing T30
 `HUMAN_GATE`. Copying the byte-identical AS-IS engine into this repository repairs its
-already-configured path binding without converting product state. Development of this
-repository under the old controller and operation of `personal-assistant` under this
-repository must not overlap until immutable version bindings are implemented.
+initial path binding without converting product state. Before T00, the live project is
+rebound to a separate detached AS-IS checkout at extraction commit `41f6757`; the
+development checkout is no longer executable authority for that project.
+
+## Rolling compatibility and activation
+
+Compatibility is a completion gate for every T00–T11 ticket, not a T12-only activity.
+T00 creates a redacted, checksummed fixture from the real T30 `HUMAN_GATE` policy and
+runtime shape plus a deterministic no-model harness. All subsequent ticket verification
+runs that harness.
+
+For every candidate revision the harness must prove:
+
+- the existing launcher CLI and path-only legacy binding remain readable;
+- the current project policy and T30 state can be loaded without implicit conversion;
+- `status` and a no-model reconciliation/resume preserve the state bytes;
+- no product file, product HEAD/fingerprint, quota authorization, gate, or run evidence
+  changes;
+- a schema-changing ticket supplies its compatibility reader, explicit dry-run
+  migration, rejection behavior, and rollback in that same ticket.
+
+This is candidate compatibility, not live activation. The live project remains on the
+detached AS-IS engine throughout T00–T11. Intermediate revisions are exercised only on
+isolated repository/runtime copies. T12 performs the full integration rehearsal; the
+post-T12 human gate is the first point at which the live binding may change. Thus old
+and new development can proceed without hot-changing the controller used by the live
+T30 gate.
 
 ## Verification strategy
 
 - preserve and run the complete 1.x unit suite at the extraction baseline;
+- run the T00 personal-assistant compatibility harness after every implementation
+  ticket;
 - add schema and transition tests for every new state and capability;
 - inject crashes before and after each durable write, commit, push, and binding switch;
 - test denial paths as first-class behavior;
@@ -158,4 +184,5 @@ repository must not overlap until immutable version bindings are implemented.
 Approval must confirm this document, the requirements index, implementation plan, and
 ticket boundaries together. Before approval, only read-only `./dev status` checks are
 authorized in this repository. No quota should be supplied and no model run should be
-started.
+started. T00 is the first executable ticket; T01 cannot start until T00 has established
+and verified the isolation/compatibility gate.

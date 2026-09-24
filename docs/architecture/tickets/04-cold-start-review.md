@@ -22,6 +22,8 @@ Implement R01/R02 for a new project that begins with a user specification.
 - Silence, partial agreement, stale approval, or later edits do not authorize planning.
 - One and multiple correction rounds resume without losing lineage.
 - Status identifies exact versions and the required human action.
+- The T00 personal-assistant compatibility harness passes unchanged; the new cold-start
+  states do not reinterpret an existing T30 execution state.
 
 ## Non-goals
 

@@ -24,6 +24,9 @@ turning Supervisor into a distributed platform.
   reports.
 - Re-running an applied migration is idempotent.
 - Existing valid state fixtures retain semantic identity.
+- The T00 personal-assistant harness passes. Legacy state inspection never performs an
+  implicit migration, and this ticket contains dry-run, apply, rejection, and rollback
+  behavior for every state version it introduces.
 
 ## Non-goals
 

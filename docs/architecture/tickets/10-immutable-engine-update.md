@@ -24,6 +24,9 @@ computers.
 - Update and rollback preserve product HEAD/fingerprint and never create dual control.
 - Git synchronization alone cannot satisfy writer ownership.
 - Fault tests cover every binding and archive boundary.
+- The T00 path-only legacy binding remains readable for status/no-model resume until an
+  explicit cutover. This ticket includes dry-run upgrade, rejection, rollback, and a
+  compatibility reader rather than making the new binding format mandatory in place.
 
 ## Non-goals
 

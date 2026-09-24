@@ -4,8 +4,10 @@ Date: 2026-09-24
 
 ## Decision
 
-No stop-factor prevents an AS-IS extraction into `dev-supervisor`. The extraction is
-safe provided the human gate and non-overlap rule below are observed.
+No stop-factor prevents an AS-IS extraction into `dev-supervisor`. The development
+checkout must not remain the live `personal-assistant` engine while tickets modify it;
+a separate immutable AS-IS runtime checkout and rolling compatibility gate resolve that
+risk.
 
 ## Evidence reviewed
 
@@ -39,10 +41,10 @@ are copied byte-for-byte before any 2.0 ticket.
    The dirty files match the preserved T30 checkpoint and must not be cleaned,
    committed, or rewritten by migration.
 3. The old controller can manage the new repository because engine and managed-project
-   roots are distinct. The new repository can control `personal-assistant` because its
-   existing launcher uses a separate project-local runtime.
-4. These two relationships may not be active concurrently: changing the new engine
-   checkout while it controls a project would violate immutable-controller behavior.
+   roots are distinct. The live `personal-assistant` engine is separately pinned to a
+   detached AS-IS checkout, so development commits do not hot-change it.
+4. Intermediate 2.0 revisions are tested only against an isolated copy of the T30
+   checkpoint. They never become live merely because a ticket commit passed.
 5. Supervisor 1.x has no push operation and no configuration switch that disables
    bounded self-repair. During this bootstrap it is treated as a pinned local
    controller; pushes are manual and out of scope, and any requested supervisor repair
@@ -65,15 +67,18 @@ requirements index and proposed architecture in this repository.
 
 ## Human qualification sequence
 
-1. Confirm the new repository is clean and `./dev status` reports T01 without invoking
+1. Confirm the new repository is clean and `./dev status` reports T00 without invoking
    a model.
 2. Review and approve the English requirements, architecture, plan, and tickets.
-3. With `personal-assistant` still quiescent, run its `./dev status` and confirm T30,
-   `HUMAN_GATE`, unchanged HEAD, and the preserved nine-file checkpoint.
-4. Exercise only the documented T30 human evidence workflow; do not run development
-   of `dev-supervisor` concurrently.
-5. Stop/quiesce `personal-assistant` before supplying quota or running T01 in
-   `dev-supervisor` through the old controller.
+3. Confirm `personal-assistant/.dev-supervisor/engine.json` names the detached AS-IS
+   runtime checkout, then run `./dev status` and verify T30, `HUMAN_GATE`, unchanged
+   HEAD, state checksum, and preserved nine-file checkpoint.
+4. Exercise only the documented T30 human evidence workflow through that pinned
+   runtime; development of `dev-supervisor` cannot change its engine files.
+5. Run T00 through the old controller to create the redacted fixture and compatibility
+   harness. Every later ticket must pass it automatically.
+6. Use only isolated copies for candidate-engine tests until T12. Change the live engine
+   binding only at the final human cutover gate.
 
 Failure of any identity, state, fingerprint, status, or non-overlap check closes the
 gate and requires investigation before a model run.

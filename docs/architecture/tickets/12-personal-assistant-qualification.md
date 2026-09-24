@@ -21,6 +21,8 @@ final human cutover decision.
 ## Acceptance criteria
 
 - All supported fixtures and fault injections pass.
+- Compatibility evidence from every T00–T11 commit is present and linked; T12 is the
+  final integration rehearsal, not the first personal-assistant compatibility check.
 - A second operator can follow the runbook without undocumented state edits.
 - Live product HEAD/fingerprint and T30 evidence remain untouched by rehearsal.
 - Results are ready for the configured post-T12 human gate.

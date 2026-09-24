@@ -35,6 +35,7 @@ English.
 | R14 | Remove dead forecast behavior | Do not implement or migrate `forecast.fallback_ticket_hours`; do not implement or migrate quota forecasting. Current trusted quota observations and guards remain required. |
 | R15 | 1.x to 2.0 cutover | Provide versioned schemas, dry-run conversion, checksummed predecessor archive, exact HEAD/fingerprint preservation, one controller/lock authority, qualification on a copy, and rehearsed rollback. |
 | R16 | AS-IS behavioral preservation | The initial extraction into this repository must remain byte-equivalent for engine-owned runtime files and pass the complete 1.x regression suite before any 2.0 change. |
+| R17 | Rolling personal-assistant compatibility | Every T00–T11 candidate must pass a no-model compatibility harness against a redacted real T30 policy/state fixture. Live personal-assistant remains on an immutable AS-IS checkout until T12 and the final human cutover gate. |
 
 ## Cross-cutting invariants
 
@@ -45,6 +46,8 @@ English.
 5. Git synchronization is persistence, not a distributed runtime lock.
 6. Backlog items are not executable tickets until architecture and planning gates pass.
 7. Migration and rollback do not change the managed product HEAD or working tree.
+8. A ticket is not complete if the candidate cannot safely inspect and reconcile the
+   approved legacy `personal-assistant` fixture without a model or state mutation.
 
 ## Deliberate exclusions
 

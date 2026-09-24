@@ -33,7 +33,9 @@ required by R06/R10 before adding any new mutation path.
 - A repository commit attempting to enable a capability is ineffective without the
   operator-controlled grant.
 - Legacy policy import reports the removed forecast field but does not preserve it.
-- Existing 1.x fixtures have an explicit compatibility/migration result.
+- The T00 personal-assistant fixture loads directly, and its no-model status/resume
+  checks remain byte-preserving. Any new policy representation retains a legacy reader
+  and explicit migration dry-run in this ticket.
 
 ## Non-goals
 

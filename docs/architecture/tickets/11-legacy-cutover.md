@@ -23,6 +23,8 @@ Implement R15 using the state/schema and engine-update foundations.
   writes.
 - Exactly one controller and lock authority exists before and after switch/rollback.
 - Golden real-state fixtures pass dry-run and invariant checks.
+- The pre-cutover T00 compatibility harness still passes. Conversion is opt-in and
+  never prevents the pinned AS-IS engine from continuing before the binding switch.
 
 ## Non-goals
 

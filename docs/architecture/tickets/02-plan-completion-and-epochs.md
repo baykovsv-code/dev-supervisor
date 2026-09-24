@@ -22,6 +22,8 @@ Replace the 1.x final-ticket failure with an explicit, crash-safe plan lifecycle
 - Resume from `PLAN_COMPLETED` is read-only until a separately approved epoch exists.
 - Previous plan identity, ticket frontier, and audit evidence remain accessible.
 - Unsupported legacy end states fail closed with a migration report.
+- The T00 T30 `HUMAN_GATE` fixture remains directly readable and byte-preserving under
+  status/no-model resume; new epoch fields are not written implicitly.
 
 ## Non-goals
 

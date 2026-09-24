@@ -22,6 +22,8 @@ Implement scenario C from `PLAN_COMPLETED` to a new approved plan epoch.
 - Scope expansion invalidates affected approval.
 - Prior epochs remain immutable.
 - Status distinguishes completed plan, backlog review, approval wait, and ready epoch.
+- The T00 personal-assistant compatibility harness passes unchanged, and its active T30
+  epoch/frontier is neither completed nor rolled forward implicitly.
 
 ## Non-goals
 

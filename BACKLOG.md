@@ -21,6 +21,19 @@ explicitly enabled. While it is disabled, a verified local commit is reported as
 otherwise unsafe interpretation that merely cloning this backlog could authorize a
 push.
 
+## Rolling personal-assistant compatibility
+
+Every development ticket must pass a compatibility harness derived from a redacted,
+checksummed `personal-assistant` T30 `HUMAN_GATE` fixture. At minimum, the candidate
+engine must load the legacy policy/state, report status and reconcile a no-model resume
+without mutating state, preserve the launcher CLI, and leave product HEAD/fingerprint
+unchanged. A schema-changing ticket must include its compatibility reader, migration
+dry-run, rejection behavior, and rollback in the same ticket.
+
+Passing this harness does not activate the candidate on the live project. Live
+`personal-assistant` remains bound to a separate immutable AS-IS engine checkout until
+T12 qualification and the final human cutover gate.
+
 ## Persist accepted changes to GitHub
 
 Development Supervisor must commit accepted project changes to Git and push them to
