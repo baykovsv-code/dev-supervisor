@@ -5,6 +5,11 @@
 Implement the existing GitHub persistence backlog requirement without weakening the
 default-off capability boundary.
 
+## Preconditions
+
+- F09 is complete; generic deterministic-verification failures have an explicit
+  fail-closed same-ticket recovery path and cannot loop unchanged.
+
 ## Scope
 
 - Add explicit canonical remote/branch validation and a post-local-commit push state.

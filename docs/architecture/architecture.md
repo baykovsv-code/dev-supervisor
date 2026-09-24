@@ -144,7 +144,8 @@ development checkout is no longer executable authority for that project.
 
 ## Rolling compatibility and activation
 
-Compatibility is a completion gate for every T00–T11 ticket, not a T12-only activity.
+Compatibility is a completion gate for every implementation ticket through T11 in
+authoritative plan order, including an inserted prerequisite, not a T12-only activity.
 T00 creates a redacted, checksummed fixture from the real T30 `HUMAN_GATE` policy and
 runtime shape plus a deterministic no-model harness. All subsequent ticket verification
 runs that harness.
@@ -160,17 +161,24 @@ For every candidate revision the harness must prove:
   migration, rejection behavior, and rollback in that same ticket.
 
 This is candidate compatibility, not live activation. The live project remains on the
-detached AS-IS engine throughout T00–T11. Intermediate revisions are exercised only on
-isolated repository/runtime copies. T12 performs the full integration rehearsal; the
-post-T12 human gate is the first point at which the live binding may change. Thus old
-and new development can proceed without hot-changing the controller used by the live
-T30 gate.
+detached AS-IS engine until implementation through T11 is complete. Intermediate
+revisions are exercised only on isolated repository/runtime copies. T12 performs the
+full integration rehearsal; the post-T12 human gate is the first point at which the
+live binding may change. Thus old and new development can proceed without hot-changing
+the controller used by the live T30 gate.
 
 ## Verification strategy
 
 - preserve and run the complete 1.x unit suite at the extraction baseline;
 - run the T00 personal-assistant compatibility harness after every implementation
   ticket;
+- stop an unchanged generic `VERIFICATION_FAILED` checkpoint from rerunning the same
+  check; an explicit audited recovery action must first validate the exact model
+  checkpoint, exactly one currently configured failed check, and its durable log, then
+  open bounded same-ticket repair without itself consuming quota or invoking a model;
+- keep mandatory host-verification failures on their stricter existing reconciliation
+  path, and after any repair rerun the full verification suite followed by the ordinary
+  scope and commit gates;
 - add schema and transition tests for every new state and capability;
 - inject crashes before and after each durable write, commit, push, and binding switch;
 - test denial paths as first-class behavior;
