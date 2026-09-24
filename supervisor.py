@@ -70,6 +70,9 @@ TERMINAL_STATES = {
 }
 STATE_VERSION = 6
 STATE_PREDECESSORS_DIRECTORY = "state-predecessors"
+COLD_START_STATE_NAME = "cold-start.json"
+COLD_START_DIRECTORY = "cold-start"
+COLD_START_PHASES = {"REQUIREMENTS_REVIEW", "ARCHITECTURE_REVIEW", "PLAN_READY"}
 QUOTA_STATES = {"QUOTA_CHECK_REQUIRED", "QUOTA_LOW", "QUOTA_EXHAUSTED"}
 RATE_LIMIT_MARKERS = (
     "rate limit", "rate_limit", "usage limit", "usage_limit", "quota exhausted",
@@ -640,7 +643,9 @@ runpy.run_path(str(engine_root / "supervisor.py"), run_name="__main__")
 '''
 
 
-def initialize_repository(target: Path, policy_path: Path | None = None) -> dict[str, Any]:
+def initialize_repository(
+    target: Path, policy_path: Path | None = None, specification_path: Path | None = None,
+) -> dict[str, Any]:
     """Install launch/config/runtime scaffolding without copying or packaging the engine."""
     root = target.expanduser().resolve()
     git = GitRepo(root)
@@ -650,6 +655,7 @@ def initialize_repository(target: Path, policy_path: Path | None = None) -> dict
     if launcher.exists() or project_policy.exists():
         raise SupervisorError("refusing to overwrite existing dev or dev-supervisor.json")
     branch = git.branch() or "master"
+    cold_start = specification_path is not None
     if policy_path is not None:
         policy, _migration = validate_project_policy(read_json(policy_path.expanduser().resolve()))
     else:
@@ -660,14 +666,15 @@ def initialize_repository(target: Path, policy_path: Path | None = None) -> dict
             raise SupervisorError(
                 "default initialization would collide with existing architecture files; supply --policy"
             )
-        atomic_write_text(
-            plan,
-            "# Implementation plan\n\n| Milestone | Tickets | Gate |\n|---|---|---|\n| 1 foundation | 01 | none |\n",
-        )
-        atomic_write_text(
-            ticket,
-            "# T01: Initial task\n\nDefine the first bounded project-owned implementation task.\n",
-        )
+        if not cold_start:
+            atomic_write_text(
+                plan,
+                "# Implementation plan\n\n| Milestone | Tickets | Gate |\n|---|---|---|\n| 1 foundation | 01 | none |\n",
+            )
+            atomic_write_text(
+                ticket,
+                "# T01: Initial task\n\nDefine the first bounded project-owned implementation task.\n",
+            )
     policy["expected_branch"] = branch
     policy.setdefault("supervisor_control_paths", ["dev", PROJECT_POLICY_NAME])
     policy["supervisor_repair_repository"] = "external"
@@ -684,15 +691,20 @@ def initialize_repository(target: Path, policy_path: Path | None = None) -> dict
     runtime.mkdir(parents=True, exist_ok=True)
     atomic_write_json(runtime / ENGINE_BINDING_NAME, {"engine_root": str(TOOL_DIR)})
     supervisor = Supervisor(root, policy=policy)
-    if not supervisor.state_path.exists():
+    if cold_start:
+        supervisor.begin_cold_start(specification_path)
+    elif not supervisor.state_path.exists():
         supervisor.save_state(supervisor.initial_state())
-    return {
+    result = {
         "repository": str(root),
         "engine_root": str(TOOL_DIR),
         "launcher": "dev",
         "policy": PROJECT_POLICY_NAME,
         "runtime": ".dev-supervisor/",
     }
+    if cold_start:
+        result["cold_start"] = COLD_START_STATE_NAME
+    return result
 
 
 class GitRepo:
@@ -1402,6 +1414,305 @@ class Supervisor:
                 yield
             finally:
                 fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
+    @property
+    def cold_start_path(self) -> Path:
+        """The cold-start record is separate from execution state by design."""
+        return self.runtime / COLD_START_STATE_NAME
+
+    def _cold_start_artifact_path(self, relative: str) -> Path:
+        candidate = Path(relative)
+        if candidate.is_absolute() or ".." in candidate.parts:
+            raise SupervisorError("cold-start artifact path is unsafe")
+        return self.runtime / COLD_START_DIRECTORY / candidate
+
+    @staticmethod
+    def _cold_start_digest(value: bytes) -> str:
+        return hashlib.sha256(value).hexdigest()
+
+    def _load_cold_start(self) -> dict[str, Any]:
+        state = read_json(self.cold_start_path)
+        required = {"version", "phase", "source_specification", "revisions", "approval", "plan"}
+        if set(state) != required or state.get("version") != 1 or state.get("phase") not in COLD_START_PHASES:
+            raise SupervisorError("cold-start state is malformed or has an unsupported version")
+        source = state.get("source_specification")
+        if (
+            not isinstance(source, dict) or set(source) != {"path", "digest"}
+            or not isinstance(source.get("path"), str) or not isinstance(source.get("digest"), str)
+            or not re.fullmatch(r"[0-9a-f]{64}", source["digest"])
+        ):
+            raise SupervisorError("cold-start source specification identity is malformed")
+        artifact = self._cold_start_artifact_path(source["path"])
+        if not artifact.is_file() or self._cold_start_digest(artifact.read_bytes()) != source["digest"]:
+            raise SupervisorError("cold-start source specification artifact is missing or changed")
+        revisions = state.get("revisions")
+        if not isinstance(revisions, list) or any(not isinstance(item, dict) for item in revisions):
+            raise SupervisorError("cold-start revision lineage is malformed")
+        latest_requirements: str | None = None
+        latest_architecture: dict[str, Any] | None = None
+        for revision in revisions:
+            required_revision = {
+                "kind", "digest", "parent_digest", "source_specification_digest", "artifact",
+            }
+            if (
+                set(revision) != required_revision or revision.get("kind") not in {"requirements", "architecture"}
+                or not all(isinstance(revision.get(key), str) for key in required_revision - {"kind"})
+                or not re.fullmatch(r"[0-9a-f]{64}", revision["digest"])
+                or revision["source_specification_digest"] != source["digest"]
+            ):
+                raise SupervisorError("cold-start revision identity is malformed")
+            proposal_path = self._cold_start_artifact_path(revision["artifact"])
+            proposal = read_json(proposal_path)
+            if content_checksum(proposal) != revision["digest"] or proposal.get("kind") != revision["kind"]:
+                raise SupervisorError("cold-start revision artifact was changed or does not match its digest")
+            if proposal.get("source_specification_digest") != source["digest"] or proposal.get("parent_revision_digest") != revision["parent_digest"]:
+                raise SupervisorError("cold-start revision artifact lineage does not match its record")
+            content_error = self._cold_start_content_error(revision["kind"], proposal.get("content"))
+            if content_error is not None:
+                raise SupervisorError(content_error)
+            expected_parent = latest_requirements or source["digest"]
+            if revision["kind"] == "requirements":
+                if revision["parent_digest"] != expected_parent:
+                    raise SupervisorError("cold-start requirements lineage is broken")
+                latest_requirements = revision["digest"]
+            else:
+                if latest_requirements is None or revision["parent_digest"] != latest_requirements:
+                    raise SupervisorError("cold-start architecture lineage is broken")
+                latest_architecture = revision
+        approval = state.get("approval")
+        if state["phase"] == "REQUIREMENTS_REVIEW" and approval is not None:
+            raise SupervisorError("requirements review cannot retain an approval")
+        if state["phase"] == "ARCHITECTURE_REVIEW":
+            if (
+                not isinstance(approval, dict) or set(approval) != {"requirements_revision_digest"}
+                or approval.get("requirements_revision_digest") != latest_requirements
+            ):
+                raise SupervisorError("architecture review requires the exact approved requirements revision")
+        if state["phase"] == "PLAN_READY":
+            if (
+                not isinstance(approval, dict)
+                or set(approval) != {"requirements_revision_digest", "architecture_revision_digest"}
+                or approval.get("requirements_revision_digest") != latest_requirements
+                or latest_architecture is None
+                or approval.get("architecture_revision_digest") != latest_architecture.get("digest")
+            ):
+                raise SupervisorError("plan readiness requires exact current requirements and architecture approval")
+        return state
+
+    def _save_cold_start(self, state: dict[str, Any]) -> None:
+        atomic_write_json(self.cold_start_path, state)
+
+    def begin_cold_start(self, specification_path: Path) -> dict[str, Any]:
+        """Capture an immutable user specification before any plan or ticket exists."""
+        if self.cold_start_path.exists():
+            raise SupervisorError("a cold-start review already exists; resume its recorded review state")
+        source = specification_path.expanduser().resolve()
+        try:
+            contents = source.read_bytes()
+        except OSError as error:
+            raise SupervisorError("cannot read the source specification") from error
+        if not contents:
+            raise SupervisorError("the source specification must not be empty")
+        plan = self.root / self.policy["implementation_plan"]
+        tickets = self.root / "docs" / "architecture" / "tickets"
+        if plan.exists() or tickets.exists():
+            raise SupervisorError("cold start requires no pre-existing implementation plan or tickets")
+        artifact_relative = "source-specification.bin"
+        artifact = self._cold_start_artifact_path(artifact_relative)
+        atomic_write_text(artifact, contents.decode("utf-8")) if self._is_utf8(contents) else self._write_cold_start_bytes(artifact, contents)
+        state = {
+            "version": 1,
+            "phase": "REQUIREMENTS_REVIEW",
+            "source_specification": {"path": artifact_relative, "digest": self._cold_start_digest(contents)},
+            "revisions": [],
+            "approval": None,
+            "plan": None,
+        }
+        self._save_cold_start(state)
+        return state
+
+    @staticmethod
+    def _is_utf8(value: bytes) -> bool:
+        try:
+            value.decode("utf-8")
+            return True
+        except UnicodeDecodeError:
+            return False
+
+    @staticmethod
+    def _write_cold_start_bytes(path: Path, value: bytes) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+        try:
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(value)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary_name, path)
+        finally:
+            if os.path.exists(temporary_name):
+                os.unlink(temporary_name)
+
+    @staticmethod
+    def _cold_start_content_error(kind: str, content: Any) -> str | None:
+        required = {
+            "requirements": {"goals", "constraints", "unknowns", "conflicts", "non_goals"},
+            "architecture": {
+                "alternatives", "selected_design", "complexity_rationale", "system_boundaries",
+                "data_integrations", "risks",
+            },
+        }.get(kind)
+        if required is None or not isinstance(content, dict) or set(content) != required:
+            return f"{kind} revision must contain exactly the required review fields"
+        for name, value in content.items():
+            if name in {"selected_design", "complexity_rationale"}:
+                if not isinstance(value, str) or not value.strip():
+                    return f"{kind} field {name!r} must be a nonempty string"
+            elif (
+                not isinstance(value, list)
+                or any(not isinstance(item, str) or not item.strip() for item in value)
+            ):
+                return f"{kind} field {name!r} must be an array of nonempty strings"
+        return None
+
+    def submit_cold_start_revision(self, proposal_path: Path) -> dict[str, Any]:
+        """Archive one immutable human/model proposal; this never grants approval."""
+        state = self._load_cold_start()
+        if state["phase"] not in {"REQUIREMENTS_REVIEW", "ARCHITECTURE_REVIEW"}:
+            raise SupervisorError("cold-start proposals are closed after architecture approval")
+        try:
+            proposal = read_json(proposal_path.expanduser().resolve())
+        except SupervisorError as error:
+            raise SupervisorError("cold-start proposal must be a JSON object") from error
+        required = {"version", "kind", "source_specification_digest", "parent_revision_digest", "content"}
+        if set(proposal) != required or proposal.get("version") != 1 or proposal.get("kind") not in {"requirements", "architecture"}:
+            raise SupervisorError("cold-start proposal has an unsupported version, kind, or keys")
+        kind = proposal["kind"]
+        expected_kind = "requirements" if state["phase"] == "REQUIREMENTS_REVIEW" else "architecture"
+        if kind != expected_kind:
+            raise SupervisorError(f"{expected_kind} review requires a {expected_kind} proposal")
+        if proposal.get("source_specification_digest") != state["source_specification"]["digest"]:
+            raise SupervisorError("cold-start proposal does not name the captured source specification")
+        previous = state["revisions"][-1] if state["revisions"] else None
+        prior_requirements = next(
+            (item for item in reversed(state["revisions"]) if item.get("kind") == "requirements"), None,
+        )
+        expected_parent = (
+            prior_requirements["digest"] if kind == "requirements" and prior_requirements is not None
+            else state["source_specification"]["digest"] if kind == "requirements"
+            else state["approval"]["requirements_revision_digest"]
+        )
+        if proposal.get("parent_revision_digest") != expected_parent:
+            raise SupervisorError("cold-start proposal parent does not match the reviewed lineage")
+        content_error = self._cold_start_content_error(kind, proposal.get("content"))
+        if content_error is not None:
+            raise SupervisorError(content_error)
+        digest = content_checksum(proposal)
+        revision = {
+            "kind": kind, "digest": digest, "parent_digest": expected_parent,
+            "source_specification_digest": state["source_specification"]["digest"],
+            "artifact": f"revisions/{digest}.json",
+        }
+        if previous and previous.get("digest") == digest:
+            return state
+        artifact = self._cold_start_artifact_path(revision["artifact"])
+        if artifact.exists() and artifact.read_bytes() != canonical_json_bytes(proposal):
+            raise SupervisorError("cold-start revision digest collides with different content")
+        self._write_cold_start_bytes(artifact, canonical_json_bytes(proposal))
+        state["revisions"].append(revision)
+        # A new revision always invalidates any approval that could have named an older one.
+        state["approval"] = (
+            None if kind == "requirements"
+            else {"requirements_revision_digest": state["approval"]["requirements_revision_digest"]}
+        )
+        self._save_cold_start(state)
+        return state
+
+    def correct_cold_start(self, stage: str) -> dict[str, Any]:
+        """Return to an exact review stage without deleting prior approved lineage."""
+        state = self._load_cold_start()
+        phases = {"requirements": "REQUIREMENTS_REVIEW", "architecture": "ARCHITECTURE_REVIEW"}
+        if stage not in phases:
+            raise SupervisorError("cold-start correction stage must be requirements or architecture")
+        if stage == "architecture" and not isinstance(state.get("approval"), dict):
+            raise SupervisorError("architecture correction requires an approved requirements revision")
+        state["phase"] = phases[stage]
+        if stage == "requirements":
+            state["approval"] = None
+        else:
+            state["approval"] = {
+                "requirements_revision_digest": state["approval"]["requirements_revision_digest"],
+            }
+        self._save_cold_start(state)
+        return state
+
+    def approve_cold_start_requirements(self, revision_digest: str) -> dict[str, Any]:
+        state = self._load_cold_start()
+        if state["phase"] != "REQUIREMENTS_REVIEW":
+            raise SupervisorError("requirements approval is only valid during REQUIREMENTS_REVIEW")
+        revision = state["revisions"][-1] if state["revisions"] else None
+        if not isinstance(revision, dict) or revision.get("kind") != "requirements" or revision.get("digest") != revision_digest:
+            raise SupervisorError("requirements approval must name the exact current requirements revision")
+        state["approval"] = {"requirements_revision_digest": revision_digest}
+        state["phase"] = "ARCHITECTURE_REVIEW"
+        self._save_cold_start(state)
+        return state
+
+    def approve_cold_start_architecture(self, requirements_digest: str, architecture_digest: str) -> dict[str, Any]:
+        state = self._load_cold_start()
+        approval = state.get("approval")
+        revision = state["revisions"][-1] if state["revisions"] else None
+        if (
+            state["phase"] != "ARCHITECTURE_REVIEW" or not isinstance(approval, dict)
+            or approval.get("requirements_revision_digest") != requirements_digest
+            or not isinstance(revision, dict) or revision.get("kind") != "architecture"
+            or revision.get("digest") != architecture_digest
+        ):
+            raise SupervisorError("architecture approval must name the exact current requirements and architecture revisions")
+        state["approval"] = {
+            "requirements_revision_digest": requirements_digest,
+            "architecture_revision_digest": architecture_digest,
+        }
+        state["phase"] = "PLAN_READY"
+        self._save_cold_start(state)
+        return state
+
+    def materialize_cold_start_plan(
+        self, plan_source: Path, requirements_digest: str, architecture_digest: str,
+    ) -> dict[str, Any]:
+        """Write a plan only from the two exact versions explicitly approved by a human."""
+        state = self._load_cold_start()
+        approval = state.get("approval")
+        if (
+            state["phase"] != "PLAN_READY" or not isinstance(approval, dict)
+            or approval.get("requirements_revision_digest") != requirements_digest
+            or approval.get("architecture_revision_digest") != architecture_digest
+        ):
+            raise SupervisorError("a plan requires explicit approval of the exact requirements and architecture revisions")
+        if state.get("plan") is not None:
+            raise SupervisorError("cold-start plan has already been materialized")
+        destination = self.root / self.policy["implementation_plan"]
+        if destination.exists():
+            raise SupervisorError("refusing to overwrite an existing implementation plan")
+        try:
+            contents = plan_source.expanduser().resolve().read_bytes()
+        except OSError as error:
+            raise SupervisorError("cannot read the approved plan source") from error
+        if not contents:
+            raise SupervisorError("the approved plan source must not be empty")
+        self._write_cold_start_bytes(destination, contents)
+        state["plan"] = {"path": self.policy["implementation_plan"], "digest": self._cold_start_digest(contents)}
+        self._save_cold_start(state)
+        return state
+
+    def cold_start_status(self) -> dict[str, Any]:
+        state = self._load_cold_start()
+        action = {
+            "REQUIREMENTS_REVIEW": "submit or explicitly approve the exact current requirements revision",
+            "ARCHITECTURE_REVIEW": "submit or explicitly approve the exact current architecture revision",
+            "PLAN_READY": "materialize a plan using the exact approved requirements and architecture revisions",
+        }[state["phase"]]
+        return {**state, "required_human_action": action}
 
     def initial_state(self) -> dict[str, Any]:
         self.git.require_repository()
@@ -6703,6 +7014,7 @@ def build_parser() -> argparse.ArgumentParser:
     initialize = subparsers.add_parser("init", help="initialize a Git repository for supervisor control")
     initialize.add_argument("repository", nargs="?", default=".")
     initialize.add_argument("--policy", type=Path)
+    initialize.add_argument("--specification", type=Path, help="begin a plan-less cold-start review from this user specification")
     migration = subparsers.add_parser(
         "policy-migration-dry-run",
         help="validate a legacy policy and report its in-memory v2 conversion without writing",
@@ -6759,6 +7071,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="adopt a reviewed external architecture-plan commit at a periodic checkpoint",
     )
     adopt.add_argument("--note", required=True)
+    cold_start = subparsers.add_parser("cold-start", help="manage a plan-less requirements and architecture review")
+    cold_start_sub = cold_start.add_subparsers(dest="cold_start_command", required=True)
+    cold_start_begin = cold_start_sub.add_parser("begin", help="capture a source specification before planning")
+    cold_start_begin.add_argument("--specification", type=Path, required=True)
+    cold_start_sub.add_parser("status", help="show exact review versions and the required human action")
+    cold_start_submit = cold_start_sub.add_parser("submit", help="archive a requirements or architecture proposal")
+    cold_start_submit.add_argument("--proposal", type=Path, required=True)
+    cold_start_correct = cold_start_sub.add_parser("correct", help="invalidate approval and return to a review stage")
+    cold_start_correct.add_argument("--stage", choices=("requirements", "architecture"), required=True)
+    cold_start_approve_requirements = cold_start_sub.add_parser("approve-requirements", help="approve one exact requirements revision")
+    cold_start_approve_requirements.add_argument("--requirements-version", required=True)
+    cold_start_approve_architecture = cold_start_sub.add_parser("approve-architecture", help="approve exact requirements and architecture revisions")
+    cold_start_approve_architecture.add_argument("--requirements-version", required=True)
+    cold_start_approve_architecture.add_argument("--architecture-version", required=True)
+    cold_start_plan = cold_start_sub.add_parser("plan", help="materialize a plan only after exact two-version approval")
+    cold_start_plan.add_argument("--source", type=Path, required=True)
+    cold_start_plan.add_argument("--requirements-version", required=True)
+    cold_start_plan.add_argument("--architecture-version", required=True)
     return parser
 
 
@@ -6766,7 +7096,7 @@ def main(arguments: list[str] | None = None) -> int:
     args = build_parser().parse_args(arguments)
     if args.command == "init":
         try:
-            print_json(initialize_repository(Path(args.repository), args.policy))
+            print_json(initialize_repository(Path(args.repository), args.policy, args.specification))
             return 0
         except SupervisorError as error:
             print(f"dev supervisor: {error}", file=sys.stderr)
@@ -6790,6 +7120,29 @@ def main(arguments: list[str] | None = None) -> int:
             return 2
     try:
         supervisor = Supervisor(repository_root(), progress=print)
+        if args.command == "cold-start":
+            with supervisor.operation_lock():
+                if args.cold_start_command == "begin":
+                    state = supervisor.begin_cold_start(args.specification)
+                elif args.cold_start_command == "status":
+                    print_json(supervisor.cold_start_status())
+                    return 0
+                elif args.cold_start_command == "submit":
+                    state = supervisor.submit_cold_start_revision(args.proposal)
+                elif args.cold_start_command == "correct":
+                    state = supervisor.correct_cold_start(args.stage)
+                elif args.cold_start_command == "approve-requirements":
+                    state = supervisor.approve_cold_start_requirements(args.requirements_version)
+                elif args.cold_start_command == "approve-architecture":
+                    state = supervisor.approve_cold_start_architecture(
+                        args.requirements_version, args.architecture_version,
+                    )
+                else:
+                    state = supervisor.materialize_cold_start_plan(
+                        args.source, args.requirements_version, args.architecture_version,
+                    )
+            print_json({**state, "required_human_action": supervisor.cold_start_status()["required_human_action"]})
+            return 0
         if args.command in {"state-migration-dry-run", "state-migration-apply", "state-migration-rollback"}:
             with supervisor.operation_lock():
                 if args.command == "state-migration-dry-run":

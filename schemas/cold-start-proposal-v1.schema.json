@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Development Supervisor cold-start proposal v1",
+  "description": "An immutable proposed revision. Approval is recorded separately and must name its digest.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "kind", "source_specification_digest", "parent_revision_digest", "content"],
+  "properties": {
+    "version": {"const": 1},
+    "kind": {"enum": ["requirements", "architecture"]},
+    "source_specification_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "parent_revision_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "content": {"type": "object"}
+  }
+}

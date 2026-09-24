@@ -4041,5 +4041,124 @@ class SupervisorTests(unittest.TestCase):
         self.assertIn("invalid timing data", dashboard)
 
 
+class ColdStartTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        git(self.root, "init", "-b", "main")
+        git(self.root, "config", "user.name", "Cold Start Test")
+        git(self.root, "config", "user.email", "cold-start@example.invalid")
+        (self.root / "README.md").write_text("# New project\n", encoding="utf-8")
+        git(self.root, "add", "README.md")
+        git(self.root, "commit", "-m", "Seed")
+        self.policy = supervisor_module.default_project_policy("main")
+        self.supervisor = Supervisor(self.root, policy=self.policy, now=lambda: NOW)
+        self.specification = self.root / "user-specification.md"
+        self.specification.write_text("Build a small useful thing.\n", encoding="utf-8")
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def proposal(self, kind, source_digest, parent_digest, content, name):
+        path = self.root / name
+        path.write_text(json.dumps({
+            "version": 1, "kind": kind, "source_specification_digest": source_digest,
+            "parent_revision_digest": parent_digest, "content": content,
+        }), encoding="utf-8")
+        return path
+
+    @staticmethod
+    def requirements_content(suffix=""):
+        return {
+            "goals": ["deliver value" + suffix], "constraints": ["preserve source"],
+            "unknowns": ["scope"], "conflicts": ["none known"], "non_goals": ["autonomy"],
+        }
+
+    @staticmethod
+    def architecture_content(suffix=""):
+        return {
+            "alternatives": ["simpler alternative" + suffix], "selected_design": "minimal" + suffix,
+            "complexity_rationale": "only necessary complexity" + suffix,
+            "system_boundaries": ["local controller"], "data_integrations": ["none"],
+            "risks": ["unknown user need"],
+        }
+
+    def test_cold_start_requires_exact_two_version_approval_before_plan(self):
+        state = self.supervisor.begin_cold_start(self.specification)
+        source = state["source_specification"]["digest"]
+        self.assertFalse((self.root / self.policy["implementation_plan"]).exists())
+        requirements = self.proposal("requirements", source, source, self.requirements_content(), "requirements.json")
+        state = self.supervisor.submit_cold_start_revision(requirements)
+        requirements_digest = state["revisions"][-1]["digest"]
+        with self.assertRaisesRegex(SupervisorError, "exact current requirements"):
+            self.supervisor.approve_cold_start_requirements("0" * 64)
+        self.supervisor.approve_cold_start_requirements(requirements_digest)
+        architecture = self.proposal(
+            "architecture", source, requirements_digest, self.architecture_content(), "architecture.json",
+        )
+        state = self.supervisor.submit_cold_start_revision(architecture)
+        architecture_digest = state["revisions"][-1]["digest"]
+        with self.assertRaisesRegex(SupervisorError, "exact current requirements and architecture"):
+            self.supervisor.approve_cold_start_architecture(requirements_digest, "0" * 64)
+        self.supervisor.approve_cold_start_architecture(requirements_digest, architecture_digest)
+        plan_source = self.root / "approved-plan.md"
+        plan_source.write_text("# Approved plan\n", encoding="utf-8")
+        self.supervisor.materialize_cold_start_plan(plan_source, requirements_digest, architecture_digest)
+        self.assertEqual((self.root / self.policy["implementation_plan"]).read_text(encoding="utf-8"), "# Approved plan\n")
+        status = self.supervisor.cold_start_status()
+        self.assertEqual(status["phase"], "PLAN_READY")
+        self.assertIn(requirements_digest, status["approval"].values())
+        self.assertIn(architecture_digest, status["approval"].values())
+
+    def test_corrections_preserve_lineage_and_invalidate_stale_architecture_approval(self):
+        state = self.supervisor.begin_cold_start(self.specification)
+        source = state["source_specification"]["digest"]
+        first_requirements = self.supervisor.submit_cold_start_revision(
+            self.proposal("requirements", source, source, self.requirements_content(), "requirements-1.json")
+        )["revisions"][-1]["digest"]
+        self.supervisor.approve_cold_start_requirements(first_requirements)
+        first_architecture = self.supervisor.submit_cold_start_revision(
+            self.proposal("architecture", source, first_requirements, self.architecture_content(), "architecture-1.json")
+        )["revisions"][-1]["digest"]
+        self.supervisor.correct_cold_start("requirements")
+        revised = self.supervisor.submit_cold_start_revision(
+            self.proposal("requirements", source, first_requirements, self.requirements_content(" revised"), "requirements-2.json")
+        )
+        revised_requirements = revised["revisions"][-1]["digest"]
+        self.assertEqual(revised["revisions"][-1]["parent_digest"], first_requirements)
+        self.assertIsNone(revised["approval"])
+        with self.assertRaisesRegex(SupervisorError, "exact current requirements"):
+            self.supervisor.approve_cold_start_requirements(first_requirements)
+        self.supervisor.approve_cold_start_requirements(revised_requirements)
+        second_architecture = self.supervisor.submit_cold_start_revision(
+            self.proposal("architecture", source, revised_requirements, self.architecture_content(" revised"), "architecture-2.json")
+        )["revisions"][-1]["digest"]
+        with self.assertRaisesRegex(SupervisorError, "exact current requirements and architecture"):
+            self.supervisor.approve_cold_start_architecture(first_requirements, first_architecture)
+        state = self.supervisor.approve_cold_start_architecture(revised_requirements, second_architecture)
+        self.assertEqual(state["phase"], "PLAN_READY")
+        self.assertEqual(len(state["revisions"]), 4)
+
+    def test_later_architecture_artifact_edit_invalidates_plan_readiness(self):
+        state = self.supervisor.begin_cold_start(self.specification)
+        source = state["source_specification"]["digest"]
+        requirements = self.supervisor.submit_cold_start_revision(
+            self.proposal("requirements", source, source, self.requirements_content(), "requirements.json")
+        )["revisions"][-1]["digest"]
+        self.supervisor.approve_cold_start_requirements(requirements)
+        state = self.supervisor.submit_cold_start_revision(
+            self.proposal("architecture", source, requirements, self.architecture_content(), "architecture.json")
+        )
+        architecture = state["revisions"][-1]["digest"]
+        self.supervisor.approve_cold_start_architecture(requirements, architecture)
+        artifact = self.supervisor.runtime / "cold-start" / state["revisions"][-1]["artifact"]
+        artifact.write_text("{}", encoding="utf-8")
+        plan_source = self.root / "approved-plan.md"
+        plan_source.write_text("# Approved plan\n", encoding="utf-8")
+        with self.assertRaisesRegex(SupervisorError, "artifact was changed"):
+            self.supervisor.materialize_cold_start_plan(plan_source, requirements, architecture)
+        self.assertFalse((self.root / self.policy["implementation_plan"]).exists())
+
+
 if __name__ == "__main__":
     unittest.main()
