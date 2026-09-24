@@ -2386,6 +2386,115 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(git(self.root, "rev-list", "--count", "HEAD"), "2")
         self.assertEqual(runner.calls, [])
 
+    def test_final_ticket_completes_one_immutable_epoch_without_inferring_a_ticket(self):
+        policy = deepcopy(self.policy)
+        policy.update({
+            "bootstrap_ticket": "T13", "initial_completed_tickets": ["T10", "T12", "T11"],
+            "ticket_verification_commands": {},
+        })
+        runner = FakeModelRunner([
+            self.write_action("apps/final.py", report("implementation", "T13", files=["apps/final.py"])),
+        ])
+        supervisor = self.make_supervisor(runner, FakeCommandRunner(), policy)
+        (self.root / "docs/architecture/implementation-plan.md").write_text(
+            "| Milestone | Tickets | Gate |\n|---|---|---|\n| 1 final | 10 → 12 → 11 → 13 | done |\n",
+            encoding="utf-8",
+        )
+        git(self.root, "add", "docs/architecture/implementation-plan.md")
+        git(self.root, "commit", "-m", "Bound final-epoch fixture")
+        self.set_quota(supervisor)
+
+        state = supervisor.run()
+
+        self.assertEqual(state["phase"], "PLAN_COMPLETED", state["message"])
+        self.assertEqual(state["current_ticket"], "T13")
+        self.assertEqual(git(self.root, "rev-list", "--count", "HEAD"), "3")
+        self.assertEqual(len(state["plan_epochs"]), 1)
+        epoch = state["plan_epochs"][0]
+        self.assertEqual(epoch["epoch_id"], state["current_plan_epoch_id"])
+        self.assertIsNone(epoch["prior_epoch_id"])
+        self.assertEqual(epoch["completion"]["ticket"], "T13")
+        self.assertEqual(epoch["completion"]["commit"], git(self.root, "rev-parse", "HEAD"))
+        status = supervisor.status()
+        self.assertEqual(status["current_frontier"]["remaining_tickets"], [])
+        self.assertEqual(status["final_result"], epoch["completion"])
+        supervisor.stop_path.write_text('{"requested_at":"fixture"}\n', encoding="utf-8")
+        self.assertEqual(supervisor.resume()["phase"], "PLAN_COMPLETED")
+        self.assertTrue(supervisor.stop_path.exists())
+        self.assertEqual(runner.calls, [("implementation", "T13")])
+
+    def test_final_commit_reconciliation_is_idempotent_after_state_write_interruption(self):
+        policy = deepcopy(self.policy)
+        policy.update({
+            "bootstrap_ticket": "T13", "initial_completed_tickets": ["T10", "T12", "T11"],
+            "ticket_verification_commands": {},
+        })
+        runner = FakeModelRunner([])
+        supervisor = self.make_supervisor(runner, policy=policy)
+        (self.root / "docs/architecture/implementation-plan.md").write_text(
+            "| Milestone | Tickets | Gate |\n|---|---|---|\n| 1 final | 10 → 12 → 11 → 13 | done |\n",
+            encoding="utf-8",
+        )
+        git(self.root, "add", "docs/architecture/implementation-plan.md")
+        git(self.root, "commit", "-m", "Bound final-epoch fixture")
+        state = supervisor.load_state()
+        starting_head = git(self.root, "rev-parse", "HEAD")
+        (self.root / "apps").mkdir()
+        (self.root / "apps/final.py").write_text("done\n", encoding="utf-8")
+        fingerprint = supervisor.git.fingerprint()
+        message = "Implement T13 person ui"
+        git(self.root, "add", "--all")
+        git(self.root, "commit", "-m", message)
+        committed = git(self.root, "rev-parse", "HEAD")
+        state.update({
+            "phase": "COMMITTING",
+            "active_run": {
+                "id": "final-prior", "role": "implementation", "ticket": "T13",
+                "report": report("implementation", "T13", files=["apps/final.py"]),
+                "verification_results": [],
+            },
+            "pending_commit": {
+                "message": message, "starting_head": starting_head, "fingerprint": fingerprint,
+                "role": "implementation", "ticket": "T13", "final_ticket": True,
+            },
+        })
+        supervisor.save_state(state)
+
+        resumed = supervisor.resume()
+
+        self.assertEqual(resumed["phase"], "PLAN_COMPLETED", resumed["message"])
+        self.assertEqual(resumed["plan_epochs"][0]["completion"]["commit"], committed)
+        self.assertEqual(git(self.root, "rev-list", "--count", "HEAD"), "3")
+        self.assertEqual(supervisor.resume()["phase"], "PLAN_COMPLETED")
+        self.assertEqual(git(self.root, "rev-list", "--count", "HEAD"), "3")
+        self.assertEqual(runner.calls, [])
+
+    def test_legacy_final_state_migration_fails_closed_with_report(self):
+        supervisor = self.make_supervisor()
+        legacy = supervisor.initial_state()
+        plan = supervisor._plan_tickets()
+        legacy.update({
+            "version": 4, "phase": "READY", "current_ticket": plan[-1],
+            "completed_tickets": plan,
+        })
+        legacy.pop("plan_epochs")
+        legacy.pop("current_plan_epoch_id")
+        supervisor.runtime.mkdir(parents=True, exist_ok=True)
+        supervisor.state_path.write_text(json.dumps(legacy), encoding="utf-8")
+
+        migration = supervisor._legacy_state_migration_report(legacy)
+
+        self.assertEqual(migration["status"], "unsupported")
+        self.assertIn("final-commit evidence", migration["reason"])
+        with self.assertRaisesRegex(SupervisorError, "migration report"):
+            supervisor.load_state()
+
+        pending = deepcopy(legacy)
+        pending.update({"phase": "COMMITTING", "completed_tickets": plan[:-1]})
+        pending_migration = supervisor._legacy_state_migration_report(pending)
+        self.assertEqual(pending_migration["status"], "unsupported")
+        self.assertIn("final-ticket commit", pending_migration["reason"])
+
     def test_pilot_a_milestone_stops_before_t13(self):
         self.amend_plan_for_pilot_runtime()
         policy = deepcopy(self.policy)

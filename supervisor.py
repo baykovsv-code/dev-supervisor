@@ -66,8 +66,9 @@ TERMINAL_STATES = {
     "VERIFICATION_FAILED", "GIT_BLOCKED", "SCOPE_BLOCKED", "REPORT_INVALID",
     "INVOCATION_FAILED", "IMPLEMENTATION_FAILED", "ARCHITECTURE_FAILED",
     "PERIODIC_CHECKPOINT", "INTERRUPTED", "DIAGNOSTIC_FAILED",
-    "SUPERVISOR_REPAIR_FAILED",
+    "SUPERVISOR_REPAIR_FAILED", "PLAN_COMPLETED", "MIGRATION_BLOCKED",
 }
+STATE_VERSION = 5
 QUOTA_STATES = {"QUOTA_CHECK_REQUIRED", "QUOTA_LOW", "QUOTA_EXHAUSTED"}
 RATE_LIMIT_MARKERS = (
     "rate limit", "rate_limit", "usage limit", "usage_limit", "quota exhausted",
@@ -1388,8 +1389,9 @@ class Supervisor:
 
     def initial_state(self) -> dict[str, Any]:
         self.git.require_repository()
+        epoch = self._new_plan_epoch()
         return {
-            "version": 4,
+            "version": STATE_VERSION,
             "phase": "READY",
             "current_ticket": self.policy["bootstrap_ticket"],
             "completed_tickets": list(self.policy["initial_completed_tickets"]),
@@ -1407,9 +1409,122 @@ class Supervisor:
             "last_completed_result": None,
             "quota_consumptions": [],
             "diagnostic": None,
+            "plan_epochs": [epoch],
+            "current_plan_epoch_id": epoch["epoch_id"],
             "history": [],
             "updated_at": isoformat(self.now()),
         }
+
+    def _plan_digest(self) -> str:
+        """Return an immutable identity for the currently approved plan bytes."""
+        try:
+            contents = (self.root / self.policy["implementation_plan"]).read_bytes()
+        except OSError as error:
+            raise SupervisorError("cannot read implementation plan for plan epoch") from error
+        return hashlib.sha256(contents).hexdigest()
+
+    def _new_plan_epoch(self, *, prior_epoch_id: str | None = None) -> dict[str, Any]:
+        tickets = self._plan_tickets()
+        return {
+            "epoch_id": uuid.uuid4().hex,
+            "prior_epoch_id": prior_epoch_id,
+            "created_at": isoformat(self.now()),
+            "plan_digest": self._plan_digest(),
+            "tickets": list(tickets),
+            "completion": None,
+        }
+
+    def _legacy_state_migration_report(self, state: dict[str, Any]) -> dict[str, Any]:
+        """Classify a v4 state before a v5 epoch is ever written.
+
+        A legacy state that already names every plan ticket as complete has no
+        durable final-commit evidence.  Guessing whether its final commit was
+        reconciled would recreate the 1.x failure, so it is deliberately not
+        migrated.
+        """
+        plan = self._plan_tickets()
+        completed = state.get("completed_tickets")
+        current = state.get("current_ticket")
+        phase = state.get("phase")
+        reason: str | None = None
+        if not isinstance(completed, list) or any(not isinstance(item, str) for item in completed):
+            reason = "completed-ticket history is malformed"
+        elif not isinstance(current, str) or current not in plan:
+            reason = "current ticket is absent from the authoritative plan"
+        elif any(item not in plan for item in completed):
+            reason = "completed-ticket history contains tickets absent from the authoritative plan"
+        elif set(plan).issubset(completed):
+            reason = "legacy state records every plan ticket complete without v5 final-commit evidence"
+        elif current == plan[-1] and phase == "COMMITTING":
+            reason = "legacy final-ticket commit is pending without v5 epoch-completion evidence"
+        elif phase == "PLAN_COMPLETED":
+            reason = "PLAN_COMPLETED requires the v5 epoch-completion schema"
+        if reason is not None:
+            return {
+                "status": "unsupported", "from_version": state.get("version", 4),
+                "to_version": STATE_VERSION, "reason": reason, "writes_required": False,
+            }
+        return {
+            "status": "supported", "from_version": state.get("version", 4),
+            "to_version": STATE_VERSION, "writes_required": True,
+        }
+
+    def _migrate_state_v4(self, state: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+        report = self._legacy_state_migration_report(state)
+        if report["status"] != "supported":
+            raise SupervisorError("unsupported legacy state migration report: " + report["reason"])
+        migrated = deepcopy(state)
+        epoch = self._new_plan_epoch()
+        migrated.update({
+            "version": STATE_VERSION,
+            "plan_epochs": [epoch],
+            "current_plan_epoch_id": epoch["epoch_id"],
+            "state_migration": report,
+        })
+        return migrated, report
+
+    def _epoch_error(self, state: dict[str, Any]) -> str | None:
+        epochs = state.get("plan_epochs")
+        current = state.get("current_plan_epoch_id")
+        if not isinstance(epochs, list) or not epochs or not isinstance(current, str):
+            return "plan epoch audit is missing"
+        required = {"epoch_id", "prior_epoch_id", "created_at", "plan_digest", "tickets", "completion"}
+        previous_id: str | None = None
+        identifiers: set[str] = set()
+        for epoch in epochs:
+            if (
+                not isinstance(epoch, dict)
+                or set(epoch) != required
+                or not isinstance(epoch.get("epoch_id"), str)
+                or not re.fullmatch(r"[0-9a-f]{32}", epoch["epoch_id"])
+                or epoch["epoch_id"] in identifiers
+                or epoch.get("prior_epoch_id") != previous_id
+                or not isinstance(epoch.get("plan_digest"), str)
+                or not re.fullmatch(r"[0-9a-f]{64}", epoch["plan_digest"])
+                or not isinstance(epoch.get("tickets"), list)
+                or not epoch["tickets"]
+                or any(not isinstance(ticket, str) or not ticket for ticket in epoch["tickets"])
+            ):
+                return "plan epoch history is malformed or its immutable prior link is broken"
+            try:
+                parse_datetime(epoch["created_at"])
+            except SupervisorError:
+                return "plan epoch creation timestamp is malformed"
+            identifiers.add(epoch["epoch_id"])
+            previous_id = epoch["epoch_id"]
+        matches = [item for item in epochs if isinstance(item, dict) and item.get("epoch_id") == current]
+        if len(matches) != 1:
+            return "current plan epoch identity is missing or ambiguous"
+        epoch = matches[0]
+        if state.get("phase") == "PLAN_COMPLETED" and not isinstance(epoch.get("completion"), dict):
+            return "completed plan epoch is missing final-commit evidence"
+        return None
+
+    def _current_epoch(self, state: dict[str, Any]) -> dict[str, Any]:
+        error = self._epoch_error(state)
+        if error is not None:
+            raise SupervisorError(error)
+        return next(item for item in state["plan_epochs"] if item["epoch_id"] == state["current_plan_epoch_id"])
 
     def load_state(self, *, read_only: bool = False) -> dict[str, Any]:
         if not self.state_path.exists():
@@ -1418,6 +1533,16 @@ class Supervisor:
                 self.save_state(state)
             return state
         state = read_json(self.state_path)
+        # Legacy quiescent gates (notably the T00 T30 fixture) are compatibility
+        # inputs.  Status and no-model resume must not convert or rewrite them.
+        if state.get("version", 4) < STATE_VERSION:
+            if state.get("phase") == "HUMAN_GATE":
+                return state
+            state, _report = self._migrate_state_v4(state)
+            if read_only:
+                return state
+            self.save_state(state)
+            return state
         normalized = ["F" + item[2:] if item.startswith("TF") else item for item in state.get("completed_tickets", [])]
         changed = normalized != state.get("completed_tickets")
         if changed:
@@ -1431,11 +1556,11 @@ class Supervisor:
             }
             changed = True
         state.setdefault("last_completed_result", None)
-        if state.get("version", 1) < 4:
-            state["version"] = 4
-            state.setdefault("quota_consumptions", [])
-            state.setdefault("diagnostic", None)
-            changed = True
+        if state.get("version") != STATE_VERSION:
+            raise SupervisorError(f"unsupported supervisor state version: {state.get('version')!r}")
+        epoch_error = self._epoch_error(state)
+        if epoch_error is not None:
+            raise SupervisorError(epoch_error)
         if changed and not read_only:
             self.save_state(state)
         return state
@@ -1544,8 +1669,12 @@ class Supervisor:
         completed = [ticket for ticket in plan if ticket in state.get("completed_tickets", [])]
         current = state["current_ticket"]
         upcoming: list[str] = []
-        if current in plan:
+        if state.get("phase") != "PLAN_COMPLETED" and current in plan:
             upcoming = plan[plan.index(current) + 1:plan.index(current) + 5]
+        epoch = None
+        if state.get("version") == STATE_VERSION:
+            epoch = self._current_epoch(state)
+        final_result = epoch.get("completion") if epoch is not None else None
         phase_roles = {
             "ARCHITECTURE_PENDING": "architecture",
             "DIAGNOSTIC_PENDING": "diagnostic",
@@ -1587,6 +1716,19 @@ class Supervisor:
             "checkpoint_due": reasons,
             "current_run_elapsed_seconds": elapsed,
             "last_completed_result": state.get("last_completed_result"),
+            "plan_epoch": epoch,
+            "current_frontier": {
+                "current_ticket": current,
+                "completed_tickets": completed,
+                "remaining_tickets": [] if state.get("phase") == "PLAN_COMPLETED" else [
+                    item for item in plan if item not in state.get("completed_tickets", [])
+                ],
+            },
+            "final_result": final_result,
+            "audit_evidence": {
+                "plan_epochs": state.get("plan_epochs", []),
+                "state_migration": state.get("state_migration"),
+            },
             "forecast": forecast,
             "effective_configuration": self.effective_configuration(),
             "next_actions": self._next_actions(state),
@@ -1649,6 +1791,10 @@ class Supervisor:
     def _next_actions(self, state: dict[str, Any]) -> list[str]:
         ticket = state["current_ticket"]
         phase = state["phase"]
+        if phase == "PLAN_COMPLETED":
+            return ["plan epoch is complete and read-only", "obtain separate approval before creating a new epoch"]
+        if phase == "MIGRATION_BLOCKED":
+            return ["inspect the migration report; no model or state transition is authorized"]
         if phase in TERMINAL_STATES:
             if (
                 phase == "PERIODIC_CHECKPOINT"
@@ -4638,7 +4784,43 @@ class Supervisor:
                 "fingerprint": self.git.fingerprint(),
                 "role": state["active_run"]["role"],
                 "ticket": state["active_run"]["ticket"],
+                "final_ticket": (
+                    state["active_run"]["role"] == "implementation"
+                    and state["active_run"]["ticket"] == self._current_epoch(state)["tickets"][-1]
+                ),
             },
+        )
+
+    def _complete_plan_epoch(self, state: dict[str, Any], *, committed: str, pending: dict[str, Any]) -> None:
+        """Durably reconcile the final verified commit into exactly one epoch completion."""
+        epoch = self._current_epoch(state)
+        ticket = pending["ticket"]
+        if ticket != epoch["tickets"][-1]:
+            raise SupervisorError("only the immutable epoch frontier may complete a plan")
+        completion = epoch.get("completion")
+        evidence = {
+            "commit": committed,
+            "ticket": ticket,
+            "run_id": state["active_run"]["id"],
+            "report": state["active_run"]["report"],
+            "verification_results": state["active_run"].get("verification_results", []),
+            "reason": "all immutable epoch tickets verified and committed",
+        }
+        if completion is not None and completion != evidence:
+            raise SupervisorError("completed epoch evidence contradicts the reconciled final commit")
+        epoch["completion"] = evidence
+        self.transition(
+            state, "PLAN_COMPLETED",
+            f"Plan epoch {epoch['epoch_id']} completed at {committed[:12]}; no new ticket will be inferred.",
+            current_ticket=ticket,
+            active_run=None,
+            starting_head=None,
+            pending_commit=None,
+            architecture_resolution=None,
+            blocked_report=None,
+            ticket_timing=None,
+            completion_reason=evidence["reason"],
+            final_result=evidence,
         )
 
     def _finish_commit(self, state: dict[str, Any]) -> bool:
@@ -4846,6 +5028,13 @@ class Supervisor:
             "active_duration_seconds": total_active,
             "architecture_escalated": bool(ticket_timing.get("architecture_escalated")),
         })
+        if pending.get("final_ticket"):
+            try:
+                self._complete_plan_epoch(state, committed=committed, pending=pending)
+            except SupervisorError as error:
+                self.transition(state, "GIT_BLOCKED", "Final commit could not be reconciled safely: " + str(error))
+                return False
+            return False
         next_ticket = self._next_ticket(ticket)
         milestone = next((item for item in self.policy["milestones"] if item["after_ticket"] == ticket), None)
         if milestone:
@@ -5947,6 +6136,10 @@ class Supervisor:
 
     def resume(self) -> dict[str, Any]:
         state = self.load_state()
+        if state["phase"] == "PLAN_COMPLETED":
+            # A completed epoch is intentionally inert.  Even clearing an old
+            # stop request would violate the read-only resume guarantee.
+            return state
         if self.stop_path.exists():
             self.stop_path.unlink()
         if state["phase"] == "PERIODIC_CHECKPOINT":
