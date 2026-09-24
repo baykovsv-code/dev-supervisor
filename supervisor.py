@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import re
 import signal
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -83,6 +84,13 @@ ADMISSION_MAPPING_FIELDS = {"status", "covered_requirements", "gaps", "contradic
 BACKLOG_CYCLE_STATE_NAME = "backlog-cycle.json"
 BACKLOG_CYCLE_DIRECTORY = "backlog-cycles"
 BACKLOG_CYCLE_PHASES = {"BACKLOG_REVIEW", "ARCHITECTURE_REVIEW", "APPROVAL_WAIT", "READY_EPOCH"}
+IMPROVEMENT_STATE_NAME = "improvement.json"
+IMPROVEMENT_DIRECTORY = "improvements"
+IMPROVEMENT_KINDS = {"user_improvement", "self_development"}
+IMPROVEMENT_PHASES = {
+    "ARCHITECTURE_IMPACT", "APPROVAL_WAIT", "BOUNDED_PLAN_READY",
+    "SUCCESSOR_STAGED", "ESCALATED_NORMAL_CYCLE",
+}
 QUOTA_STATES = {"QUOTA_CHECK_REQUIRED", "QUOTA_LOW", "QUOTA_EXHAUSTED"}
 RATE_LIMIT_MARKERS = (
     "rate limit", "rate_limit", "usage limit", "usage_limit", "quota exhausted",
@@ -136,6 +144,15 @@ def _observed_quota_policy(legacy: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _default_improvement_policy() -> dict[str, Any]:
+    """Conservative bounds for an explicitly requested out-of-plan review."""
+    return {
+        "max_tickets": 1,
+        "max_description_characters": 2000,
+        "successor_directory": ".dev-supervisor/successors",
+    }
+
+
 def migrate_legacy_policy(policy: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     """Return an in-memory v3 policy and an explicit, non-writing migration report."""
     if policy.get("version") not in {1, 2}:
@@ -151,6 +168,7 @@ def migrate_legacy_policy(policy: dict[str, Any]) -> tuple[dict[str, Any], dict[
     migrated.pop("forecast", None)
     removed.append("forecast")
     migrated["quota"] = _observed_quota_policy(policy.get("quota", {}))
+    migrated.setdefault("improvement", _default_improvement_policy())
     return migrated, {
         "from_version": source_version,
         "to_version": POLICY_VERSION,
@@ -179,6 +197,7 @@ def validate_project_policy(policy: dict[str, Any]) -> tuple[dict[str, Any], dic
         "host_verification_capabilities", "ticket_verification_commands",
         "evidence_check_commands", "human_evidence_gates", "implementation_forbidden_paths",
         "architecture_allowed_paths", "capabilities",
+        "improvement",
     }
     unknown = set(policy) - required
     missing = required - set(policy)
@@ -233,6 +252,20 @@ def validate_project_policy(policy: dict[str, Any]) -> tuple[dict[str, Any], dic
         raise SupervisorError("model_watchdog values must be nonnegative integers")
     if watchdog["warning_seconds"] > watchdog["hard_timeout_seconds"]:
         raise SupervisorError("model_watchdog warning_seconds cannot exceed hard_timeout_seconds")
+    improvement = policy["improvement"]
+    if not isinstance(improvement, dict) or set(improvement) != {
+        "max_tickets", "max_description_characters", "successor_directory",
+    }:
+        raise SupervisorError("improvement policy has unknown or missing keys")
+    for key in ("max_tickets", "max_description_characters"):
+        if isinstance(improvement[key], bool) or not isinstance(improvement[key], int) or improvement[key] < 1:
+            raise SupervisorError(f"improvement.{key} must be a positive integer")
+    successor_directory = improvement["successor_directory"]
+    if (
+        not isinstance(successor_directory, str) or not successor_directory
+        or Path(successor_directory).is_absolute() or ".." in Path(successor_directory).parts
+    ):
+        raise SupervisorError("improvement.successor_directory must be a safe relative path")
     return deepcopy(policy), None
 
 
@@ -677,6 +710,7 @@ def default_project_policy(expected_branch: str) -> dict[str, Any]:
             "terminate_grace_seconds": 10,
         },
         "capabilities": dict.fromkeys(CAPABILITY_NAMES, False),
+        "improvement": _default_improvement_policy(),
         "milestones": [],
         "verification_commands": [{"name": "Git diff check", "command": ["git", "diff", "--check"]}],
         "supervisor_repair_verification_commands": [],
@@ -2311,6 +2345,179 @@ class Supervisor:
             "READY_EPOCH": "the approved next epoch is ready; implementation remains separately controlled",
         }[cycle["phase"]]
         return {**cycle, "required_human_action": action}
+
+    # An improvement is intentionally not a backlog item and cannot become
+    # executable merely because it was requested.  This separate, append-only
+    # review record makes feature work, defect repair, and engine development
+    # distinguishable in both state and audit evidence.
+    @property
+    def improvement_path(self) -> Path:
+        return self.runtime / IMPROVEMENT_STATE_NAME
+
+    def _improvement_artifact(self, request_id: str, relative: str) -> Path:
+        candidate = Path(relative)
+        if not re.fullmatch(r"[0-9a-f]{32}", request_id) or candidate.is_absolute() or ".." in candidate.parts:
+            raise SupervisorError("improvement artifact path is unsafe")
+        return self.runtime / IMPROVEMENT_DIRECTORY / request_id / candidate
+
+    @staticmethod
+    def _improvement_capability(kind: str) -> str:
+        if kind not in IMPROVEMENT_KINDS:
+            raise SupervisorError("improvement kind must be user_improvement or self_development")
+        return "self_modification" if kind == "self_development" else "user_requested_modification"
+
+    def _append_improvement_audit(self, action: str, record: dict[str, Any]) -> None:
+        state = self.load_state()
+        state.setdefault("improvement_audit", []).append({
+            "at": isoformat(self.now()), "action": action,
+            "request_id": record["request_id"], "kind": record["kind"], "phase": record["phase"],
+        })
+        self.save_state(state)
+
+    def _load_improvement(self) -> dict[str, Any]:
+        record = read_json(self.improvement_path)
+        required = {"version", "request_id", "kind", "trigger", "description", "request_digest", "phase", "revisions", "approval", "materialization", "successor"}
+        if set(record) != required or record.get("version") != 1 or record.get("kind") not in IMPROVEMENT_KINDS or record.get("phase") not in IMPROVEMENT_PHASES:
+            raise SupervisorError("improvement state is malformed or has an unsupported version")
+        if not isinstance(record.get("trigger"), str) or not record["trigger"].strip() or not isinstance(record.get("description"), str) or not record["description"].strip():
+            raise SupervisorError("improvement request lacks an explicit user trigger or description")
+        request_material = {"kind": record["kind"], "trigger": record["trigger"], "description": record["description"]}
+        if record.get("request_digest") != content_checksum(request_material):
+            raise SupervisorError("improvement request identity was changed")
+        revisions = record.get("revisions")
+        if not isinstance(revisions, list):
+            raise SupervisorError("improvement revision lineage is malformed")
+        parent = record["request_digest"]
+        for revision in revisions:
+            if not isinstance(revision, dict) or set(revision) != {"digest", "parent_digest", "artifact"} or revision.get("parent_digest") != parent:
+                raise SupervisorError("improvement architecture correction lineage is broken")
+            proposal = read_json(self._improvement_artifact(record["request_id"], revision.get("artifact", "")))
+            if content_checksum(proposal) != revision.get("digest"):
+                raise SupervisorError("improvement architecture artifact was changed")
+            parent = revision["digest"]
+        approval = record.get("approval")
+        if approval is not None and approval != parent:
+            raise SupervisorError("improvement approval must name the exact current architecture revision")
+        if record["phase"] in {"BOUNDED_PLAN_READY", "SUCCESSOR_STAGED"} and (approval is None or not isinstance(record.get("materialization"), dict)):
+            raise SupervisorError("bounded improvement lacks approval or materialization evidence")
+        return record
+
+    def request_improvement(self, kind: str, trigger: str, description: str) -> dict[str, Any]:
+        capability = self._improvement_capability(kind)
+        self.require_capability(capability)
+        if self.improvement_path.exists():
+            raise SupervisorError("an improvement review already exists; inspect or finish its recorded workflow")
+        if not trigger.strip() or not description.strip():
+            raise SupervisorError("improvement requires an explicit nonempty user trigger and description")
+        if len(description) > self.policy["improvement"]["max_description_characters"]:
+            raise SupervisorError("improvement description exceeds the configured bounded policy")
+        material = {"kind": kind, "trigger": trigger.strip(), "description": description.strip()}
+        record = {"version": 1, "request_id": uuid.uuid4().hex, **material,
+                  "request_digest": content_checksum(material), "phase": "ARCHITECTURE_IMPACT",
+                  "revisions": [], "approval": None, "materialization": None, "successor": None}
+        atomic_write_json(self.improvement_path, record)
+        self._append_improvement_audit("explicit_user_trigger", record)
+        return record
+
+    def submit_improvement_architecture(self, proposal_path: Path) -> dict[str, Any]:
+        record = self._load_improvement()
+        self.require_capability(self._improvement_capability(record["kind"]))
+        if record["phase"] not in {"ARCHITECTURE_IMPACT", "APPROVAL_WAIT"}:
+            raise SupervisorError("improvement architecture corrections are closed after materialization or escalation")
+        proposal = read_json(proposal_path.expanduser().resolve())
+        required = {"version", "kind", "request_digest", "parent_revision_digest", "content"}
+        if set(proposal) != required or proposal.get("version") != 1 or proposal.get("kind") != "architecture_impact" or proposal.get("request_digest") != record["request_digest"]:
+            raise SupervisorError("improvement architecture review requires a matching version 1 impact proposal")
+        parent = record["revisions"][-1]["digest"] if record["revisions"] else record["request_digest"]
+        if proposal.get("parent_revision_digest") != parent:
+            raise SupervisorError("improvement correction must name the immediately preceding lineage revision")
+        content = proposal.get("content")
+        required_content = {"alternatives", "selected_design", "complexity_rationale", "architecture_delta", "risks"}
+        if not isinstance(content, dict) or set(content) != required_content or not all(isinstance(content.get(name), list) and content[name] and all(isinstance(item, str) and item.strip() for item in content[name]) for name in ("alternatives", "architecture_delta", "risks")) or not all(isinstance(content.get(name), str) and content[name].strip() for name in ("selected_design", "complexity_rationale")):
+            raise SupervisorError("improvement architecture impact content is malformed")
+        digest = content_checksum(proposal)
+        artifact = f"architecture/{digest}.json"
+        self._write_cold_start_bytes(self._improvement_artifact(record["request_id"], artifact), canonical_json_bytes(proposal))
+        record["revisions"].append({"digest": digest, "parent_digest": parent, "artifact": artifact})
+        record["approval"] = None
+        record["phase"] = "APPROVAL_WAIT"
+        atomic_write_json(self.improvement_path, record)
+        self._append_improvement_audit("architecture_impact_corrected", record)
+        return record
+
+    def approve_improvement_architecture(self, revision_digest: str) -> dict[str, Any]:
+        record = self._load_improvement()
+        self.require_capability(self._improvement_capability(record["kind"]))
+        if record["phase"] != "APPROVAL_WAIT" or not record["revisions"] or record["revisions"][-1]["digest"] != revision_digest:
+            raise SupervisorError("improvement approval must name the exact current architecture impact revision")
+        record["approval"] = revision_digest
+        atomic_write_json(self.improvement_path, record)
+        self._append_improvement_audit("architecture_approved", record)
+        return record
+
+    def materialize_improvement_plan(self, plan_source: Path, tickets_directory: Path) -> dict[str, Any]:
+        record = self._load_improvement()
+        self.require_capability(self._improvement_capability(record["kind"]))
+        if record["phase"] != "APPROVAL_WAIT" or record.get("approval") is None:
+            raise SupervisorError("bounded improvement plan requires exact human architecture approval")
+        plan_bytes = plan_source.expanduser().resolve().read_bytes()
+        tickets = self._parse_plan_tickets(plan_bytes.decode("utf-8"))
+        if len(tickets) > self.policy["improvement"]["max_tickets"]:
+            record["phase"] = "ESCALATED_NORMAL_CYCLE"
+            atomic_write_json(self.improvement_path, record)
+            self._append_improvement_audit("escalated_to_normal_cycle", record)
+            return record
+        if not tickets_directory.is_dir() or any(len(list(tickets_directory.glob(f"{ticket[1:]}-*.md"))) != 1 for ticket in tickets):
+            raise SupervisorError("bounded improvement requires exactly one ticket file for every planned ticket")
+        base = f"plans/{hashlib.sha256(plan_bytes).hexdigest()}/"
+        self._write_cold_start_bytes(self._improvement_artifact(record["request_id"], base + "implementation-plan.md"), plan_bytes)
+        for ticket in tickets:
+            source = next(tickets_directory.glob(f"{ticket[1:]}-*.md"))
+            self._write_cold_start_bytes(self._improvement_artifact(record["request_id"], base + "tickets/" + source.name), source.read_bytes())
+        record["materialization"] = {"plan": base + "implementation-plan.md", "tickets": tickets, "ticket_directory": base + "tickets", "plan_digest": hashlib.sha256(plan_bytes).hexdigest()}
+        record["phase"] = "BOUNDED_PLAN_READY"
+        atomic_write_json(self.improvement_path, record)
+        self._append_improvement_audit("bounded_plan_and_scope_validated", record)
+        return record
+
+    def stage_successor(self) -> dict[str, Any]:
+        record = self._load_improvement()
+        if record["kind"] != "self_development":
+            raise SupervisorError("only self_development may stage a successor generation")
+        self.require_capability("self_modification")
+        if record["phase"] != "BOUNDED_PLAN_READY":
+            raise SupervisorError("successor staging requires an approved bounded self-development plan")
+        target = self.root / self.policy["improvement"]["successor_directory"] / record["request_id"]
+        active = self.assets_dir.resolve()
+        if target.exists() or target.resolve() == active:
+            raise SupervisorError("successor target is not an isolated new generation")
+        shutil.copytree(active, target, ignore=shutil.ignore_patterns(".git", ".dev-supervisor", "__pycache__", "*.pyc"))
+        record["successor"] = {"path": str(target.relative_to(self.root)), "base_engine": str(active), "base_digest": self._directory_digest(target), "activation": "forbidden_pending_t10_t11_quiescent_handoff"}
+        record["phase"] = "SUCCESSOR_STAGED"
+        atomic_write_json(self.improvement_path, record)
+        self._append_improvement_audit("successor_staged_in_isolation", record)
+        return record
+
+    @staticmethod
+    def _directory_digest(path: Path) -> str:
+        digest = hashlib.sha256()
+        for child in sorted(item for item in path.rglob("*") if item.is_file()):
+            digest.update(child.relative_to(path).as_posix().encode() + b"\0")
+            digest.update(child.read_bytes())
+        return digest.hexdigest()
+
+    def improvement_status(self) -> dict[str, Any]:
+        if not self.improvement_path.exists():
+            return {"phase": "ABSENT", "required_human_action": "explicitly request an enabled improvement; status is read-only"}
+        record = self._load_improvement()
+        actions = {
+            "ARCHITECTURE_IMPACT": "submit an architecture impact review rooted in the explicit trigger",
+            "APPROVAL_WAIT": "approve the exact current architecture impact revision or submit a correction",
+            "BOUNDED_PLAN_READY": "stage an isolated successor only for self-development; implementation remains separately controlled",
+            "SUCCESSOR_STAGED": "perform no activation here; T10/T11 own the later quiescent handoff",
+            "ESCALATED_NORMAL_CYCLE": "start a normal approved development cycle; do not split scope automatically",
+        }
+        return {**record, "required_human_action": actions[record["phase"]]}
 
     def initial_state(self) -> dict[str, Any]:
         self.git.require_repository()
@@ -7693,6 +7900,21 @@ def build_parser() -> argparse.ArgumentParser:
     backlog_materialize.add_argument("--index-source", type=Path, required=True)
     backlog_materialize.add_argument("--tickets-directory", type=Path, required=True)
     backlog_materialize.add_argument("--ticket-lineage", type=Path, required=True)
+    improvement = subparsers.add_parser("improvement", help="review an explicitly triggered, capability-gated out-of-plan improvement")
+    improvement_sub = improvement.add_subparsers(dest="improvement_command", required=True)
+    improvement_request = improvement_sub.add_parser("request", help="record an explicit user trigger; disabled capability writes nothing")
+    improvement_request.add_argument("--kind", choices=("user_improvement", "self_development"), required=True)
+    improvement_request.add_argument("--trigger", required=True)
+    improvement_request.add_argument("--description", required=True)
+    improvement_sub.add_parser("status", help="read the improvement workflow without mutation")
+    improvement_submit = improvement_sub.add_parser("submit-architecture", help="archive an architecture-impact revision")
+    improvement_submit.add_argument("--proposal", type=Path, required=True)
+    improvement_approve = improvement_sub.add_parser("approve-architecture", help="approve one exact architecture-impact revision")
+    improvement_approve.add_argument("--revision", required=True)
+    improvement_plan = improvement_sub.add_parser("materialize-plan", help="validate and archive a bounded plan and its ticket files")
+    improvement_plan.add_argument("--plan-source", type=Path, required=True)
+    improvement_plan.add_argument("--tickets-directory", type=Path, required=True)
+    improvement_sub.add_parser("stage-successor", help="copy a self-development successor into isolation; never activate it")
     return parser
 
 
@@ -7783,6 +8005,23 @@ def main(arguments: list[str] | None = None) -> int:
                 else:
                     result = supervisor.materialize_backlog_epoch(args.plan_source, args.index_source, args.tickets_directory, args.ticket_lineage)
             print_json({**result, "required_human_action": supervisor.backlog_cycle_status()["required_human_action"]})
+            return 0
+        if args.command == "improvement":
+            if args.improvement_command == "status":
+                print_json(supervisor.improvement_status())
+                return 0
+            with supervisor.operation_lock():
+                if args.improvement_command == "request":
+                    result = supervisor.request_improvement(args.kind, args.trigger, args.description)
+                elif args.improvement_command == "submit-architecture":
+                    result = supervisor.submit_improvement_architecture(args.proposal)
+                elif args.improvement_command == "approve-architecture":
+                    result = supervisor.approve_improvement_architecture(args.revision)
+                elif args.improvement_command == "materialize-plan":
+                    result = supervisor.materialize_improvement_plan(args.plan_source, args.tickets_directory)
+                else:
+                    result = supervisor.stage_successor()
+            print_json({**result, "required_human_action": supervisor.improvement_status()["required_human_action"]})
             return 0
         if args.command in {"state-migration-dry-run", "state-migration-apply", "state-migration-rollback"}:
             with supervisor.operation_lock():

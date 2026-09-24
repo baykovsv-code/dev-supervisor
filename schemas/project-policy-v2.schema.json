@@ -11,7 +11,7 @@
     "verification_commands", "supervisor_repair_verification_commands",
     "host_verification_capabilities", "ticket_verification_commands",
     "evidence_check_commands", "human_evidence_gates", "implementation_forbidden_paths",
-    "architecture_allowed_paths", "capabilities"
+    "architecture_allowed_paths", "capabilities", "improvement"
   ],
   "properties": {
     "version": {"const": 3},
@@ -42,7 +42,16 @@
     "evidence_check_commands": {"type": "object"}, "human_evidence_gates": {"type": "object"},
     "implementation_forbidden_paths": {"type": "array", "items": {"type": "string"}},
     "architecture_allowed_paths": {"type": "array", "items": {"type": "string"}},
-    "capabilities": {"$ref": "#/$defs/capabilities"}
+    "capabilities": {"$ref": "#/$defs/capabilities"},
+    "improvement": {
+      "type": "object", "additionalProperties": false,
+      "required": ["max_tickets", "max_description_characters", "successor_directory"],
+      "properties": {
+        "max_tickets": {"type": "integer", "minimum": 1},
+        "max_description_characters": {"type": "integer", "minimum": 1},
+        "successor_directory": {"type": "string"}
+      }
+    }
   },
   "$defs": {
     "capabilities": {
