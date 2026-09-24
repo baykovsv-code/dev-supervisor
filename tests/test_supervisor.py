@@ -2495,6 +2495,31 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(pending_migration["status"], "unsupported")
         self.assertIn("final-ticket commit", pending_migration["reason"])
 
+    def test_explicit_v5_to_v6_state_migration_is_dry_run_safe_idempotent_and_rollbackable(self):
+        supervisor = self.make_supervisor()
+        source = supervisor.load_state()
+        source["version"] = 5
+        supervisor.runtime.mkdir(parents=True, exist_ok=True)
+        supervisor_module.atomic_write_json(supervisor.state_path, source)
+        before = supervisor_module.read_json(supervisor.state_path)
+
+        dry_run = supervisor.state_migration_dry_run()
+        self.assertEqual(dry_run, supervisor.state_migration_dry_run())
+        self.assertEqual(supervisor_module.read_json(supervisor.state_path), before)
+        with patch.object(supervisor_module, "atomic_write_json", side_effect=OSError("injected write fault")):
+            with self.assertRaisesRegex(OSError, "injected write fault"):
+                supervisor.apply_state_migration()
+        self.assertEqual(supervisor_module.read_json(supervisor.state_path), before)
+
+        self.assertEqual(supervisor.apply_state_migration(), dry_run)
+        migrated = supervisor.load_state(read_only=True)
+        self.assertEqual(migrated["version"], 6)
+        self.assertEqual(migrated["state_predecessor"]["checksum"], dry_run["source_checksum"])
+        self.assertFalse(supervisor.apply_state_migration()["writes_required"])
+        rollback = supervisor.rollback_state_migration()
+        self.assertEqual(rollback["target_checksum"], dry_run["source_checksum"])
+        self.assertEqual(supervisor_module.read_json(supervisor.state_path), before)
+
     def test_pilot_a_milestone_stops_before_t13(self):
         self.amend_plan_for_pilot_runtime()
         policy = deepcopy(self.policy)

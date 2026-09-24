@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Development Supervisor approval identity v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "document_digests"],
+  "properties": {
+    "version": {"const": 1},
+    "document_digests": {"type": "object", "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}
+  }
+}

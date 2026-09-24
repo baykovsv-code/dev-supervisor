@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Development Supervisor audit event v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "event_id", "predecessor_checksum", "kind", "payload"],
+  "properties": {
+    "version": {"const": 1},
+    "event_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "predecessor_checksum": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+    "kind": {"type": "string"},
+    "payload": {"type": "object"}
+  }
+}

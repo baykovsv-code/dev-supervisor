@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Development Supervisor engine identity and capabilities v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "engine_id", "capabilities"],
+  "properties": {
+    "version": {"const": 1},
+    "engine_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "capabilities": {"type": "object", "additionalProperties": {"type": "boolean"}}
+  }
+}

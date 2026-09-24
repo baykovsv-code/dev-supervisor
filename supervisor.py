@@ -68,7 +68,8 @@ TERMINAL_STATES = {
     "PERIODIC_CHECKPOINT", "INTERRUPTED", "DIAGNOSTIC_FAILED",
     "SUPERVISOR_REPAIR_FAILED", "PLAN_COMPLETED", "MIGRATION_BLOCKED",
 }
-STATE_VERSION = 5
+STATE_VERSION = 6
+STATE_PREDECESSORS_DIRECTORY = "state-predecessors"
 QUOTA_STATES = {"QUOTA_CHECK_REQUIRED", "QUOTA_LOW", "QUOTA_EXHAUSTED"}
 RATE_LIMIT_MARKERS = (
     "rate limit", "rate_limit", "usage limit", "usage_limit", "quota exhausted",
@@ -274,6 +275,21 @@ def atomic_write_json(path: Path, value: Any) -> None:
     finally:
         if os.path.exists(temporary_name):
             os.unlink(temporary_name)
+
+
+def canonical_json_bytes(value: Any) -> bytes:
+    """Stable bytes for content identities; never use presentation JSON as identity."""
+    return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
+def content_checksum(value: Any) -> str:
+    return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
+
+
+def audit_event(kind: str, payload: dict[str, Any], predecessor_checksum: str | None = None) -> dict[str, Any]:
+    """Create a self-verifying, append-only audit record without a journal service."""
+    material = {"version": 1, "predecessor_checksum": predecessor_checksum, "kind": kind, "payload": payload}
+    return {"event_id": content_checksum(material), **material}
 
 
 def atomic_write_text(path: Path, value: str) -> None:
@@ -1483,6 +1499,126 @@ class Supervisor:
         })
         return migrated, report
 
+    def _state_predecessor_path(self, checksum: str) -> Path:
+        if not re.fullmatch(r"[0-9a-f]{64}", checksum):
+            raise SupervisorError("state predecessor checksum is malformed")
+        return self.runtime / STATE_PREDECESSORS_DIRECTORY / f"{checksum}.json"
+
+    def _validate_state_v6(self, state: dict[str, Any]) -> str | None:
+        predecessor = state.get("state_predecessor")
+        if predecessor is None:
+            # A freshly initialized v6 runtime has no converted predecessor.
+            return None
+        required = {"version", "checksum", "archive"}
+        if not isinstance(predecessor, dict) or set(predecessor) != required:
+            return "versioned state predecessor linkage is missing or malformed"
+        version, checksum, archive = predecessor.get("version"), predecessor.get("checksum"), predecessor.get("archive")
+        if version != 5 or not isinstance(checksum, str) or not re.fullmatch(r"[0-9a-f]{64}", checksum):
+            return "versioned state predecessor identity is unsupported or malformed"
+        if archive != f"{STATE_PREDECESSORS_DIRECTORY}/{checksum}.json":
+            return "versioned state predecessor archive link is malformed"
+        events = state.get("audit_events")
+        if events is not None:
+            predecessor_checksum: str | None = None
+            if not isinstance(events, list):
+                return "versioned state audit events are malformed"
+            for event in events:
+                if not isinstance(event, dict) or set(event) != {"version", "event_id", "predecessor_checksum", "kind", "payload"}:
+                    return "versioned state audit event shape is malformed"
+                expected = audit_event(event.get("kind"), event.get("payload"), predecessor_checksum)
+                if event != expected:
+                    return "versioned state audit event checksum or predecessor link is broken"
+                predecessor_checksum = event["event_id"]
+        return None
+
+    def state_migration_dry_run(self) -> dict[str, Any]:
+        """Validate exactly one supported conversion without changing runtime files."""
+        if not self.state_path.exists():
+            raise SupervisorError("state migration requires an existing state snapshot")
+        state = read_json(self.state_path)
+        version = state.get("version")
+        if version == STATE_VERSION:
+            error = self._validate_state_v6(state)
+            if error is not None:
+                raise SupervisorError(error)
+            return {
+                "status": "already_applied", "from_version": STATE_VERSION,
+                "to_version": STATE_VERSION, "source_checksum": content_checksum(state),
+                "target_checksum": content_checksum(state), "writes_required": False,
+            }
+        if version != 5:
+            raise SupervisorError(f"unsupported state migration source version: {version!r}; supported: 5 -> 6")
+        error = self._epoch_error(state)
+        if error is not None:
+            raise SupervisorError("state migration source is malformed: " + error)
+        source_checksum = content_checksum(state)
+        migrated = deepcopy(state)
+        migrated["version"] = STATE_VERSION
+        migrated["state_predecessor"] = {
+            "version": 5,
+            "checksum": source_checksum,
+            "archive": f"{STATE_PREDECESSORS_DIRECTORY}/{source_checksum}.json",
+        }
+        migrated["audit_events"] = [audit_event("state_migrated", {
+            "from_version": 5, "to_version": STATE_VERSION, "source_checksum": source_checksum,
+        })]
+        return {
+            "status": "supported", "from_version": 5, "to_version": STATE_VERSION,
+            "source_checksum": source_checksum, "target_checksum": content_checksum(migrated),
+            "archive": migrated["state_predecessor"]["archive"], "writes_required": True,
+        }
+
+    def apply_state_migration(self) -> dict[str, Any]:
+        """Apply the dry-run transformation after preserving its exact predecessor."""
+        report = self.state_migration_dry_run()
+        if not report["writes_required"]:
+            return report
+        source = read_json(self.state_path)
+        # Recompute with the same routine so dry-run and apply cannot diverge.
+        if content_checksum(source) != report["source_checksum"]:
+            raise SupervisorError("state changed after migration validation; refusing to rewrite it")
+        archive = self._state_predecessor_path(report["source_checksum"])
+        if archive.exists():
+            archived = read_json(archive)
+            if content_checksum(archived) != report["source_checksum"]:
+                raise SupervisorError("existing predecessor archive checksum disagrees with source state")
+        else:
+            atomic_write_json(archive, source)
+        # The archive-first order is recoverable: a retry after an interrupted state
+        # write validates and reuses the immutable archive.
+        migrated = deepcopy(source)
+        migrated["version"] = STATE_VERSION
+        migrated["state_predecessor"] = {
+            "version": 5, "checksum": report["source_checksum"], "archive": report["archive"],
+        }
+        migrated["audit_events"] = [audit_event("state_migrated", {
+            "from_version": 5, "to_version": STATE_VERSION, "source_checksum": report["source_checksum"],
+        })]
+        if content_checksum(migrated) != report["target_checksum"]:
+            raise SupervisorError("state migration transformation was not deterministic")
+        atomic_write_json(self.state_path, migrated)
+        return report
+
+    def rollback_state_migration(self) -> dict[str, Any]:
+        """Restore the checksummed v5 predecessor; no source version is guessed."""
+        state = read_json(self.state_path)
+        if state.get("version") != STATE_VERSION:
+            raise SupervisorError("state rollback only supports version 6")
+        error = self._validate_state_v6(state)
+        if error is not None:
+            raise SupervisorError(error)
+        predecessor = state["state_predecessor"]
+        archive = self._state_predecessor_path(predecessor["checksum"])
+        archived = read_json(archive)
+        if archived.get("version") != predecessor["version"] or content_checksum(archived) != predecessor["checksum"]:
+            raise SupervisorError("state predecessor archive is missing, malformed, or has a checksum mismatch")
+        atomic_write_json(self.state_path, archived)
+        return {
+            "status": "rolled_back", "from_version": STATE_VERSION,
+            "to_version": predecessor["version"], "source_checksum": content_checksum(state),
+            "target_checksum": predecessor["checksum"], "writes_required": True,
+        }
+
     def _epoch_error(self, state: dict[str, Any]) -> str | None:
         epochs = state.get("plan_epochs")
         current = state.get("current_plan_epoch_id")
@@ -1533,15 +1669,14 @@ class Supervisor:
                 self.save_state(state)
             return state
         state = read_json(self.state_path)
-        # Legacy quiescent gates (notably the T00 T30 fixture) are compatibility
-        # inputs.  Status and no-model resume must not convert or rewrite them.
-        if state.get("version", 4) < STATE_VERSION:
-            if state.get("phase") == "HUMAN_GATE":
-                return state
-            state, _report = self._migrate_state_v4(state)
-            if read_only:
-                return state
-            self.save_state(state)
+        # All legacy snapshots are inspection-only until the operator explicitly
+        # invokes migration.  In particular, status and no-model resume cannot
+        # mutate the T00 T30 HUMAN_GATE fixture.
+        if state.get("version") != STATE_VERSION:
+            if state.get("version") == 4 and state.get("phase") != "HUMAN_GATE":
+                report = self._legacy_state_migration_report(state)
+                if report["status"] != "supported":
+                    raise SupervisorError("unsupported legacy state migration report: " + report["reason"])
             return state
         normalized = ["F" + item[2:] if item.startswith("TF") else item for item in state.get("completed_tickets", [])]
         changed = normalized != state.get("completed_tickets")
@@ -1561,11 +1696,16 @@ class Supervisor:
         epoch_error = self._epoch_error(state)
         if epoch_error is not None:
             raise SupervisorError(epoch_error)
+        predecessor_error = self._validate_state_v6(state)
+        if predecessor_error is not None:
+            raise SupervisorError(predecessor_error)
         if changed and not read_only:
             self.save_state(state)
         return state
 
     def save_state(self, state: dict[str, Any]) -> None:
+        if state.get("version") != STATE_VERSION:
+            raise SupervisorError("legacy state is inspection-only; run state-migration-dry-run then state-migration-apply")
         state["updated_at"] = isoformat(self.now())
         atomic_write_json(self.state_path, state)
 
@@ -6005,6 +6145,8 @@ class Supervisor:
 
     def _run_loop(self) -> dict[str, Any]:
         state = self.load_state()
+        if state.get("version") != STATE_VERSION:
+            raise SupervisorError("legacy state is inspection-only; run state-migration-dry-run then state-migration-apply")
         if state["phase"] in QUOTA_STATES and state.get("quota_resume_phase"):
             if state["phase"] == "QUOTA_EXHAUSTED":
                 snapshot = self.quota.snapshot()
@@ -6136,6 +6278,10 @@ class Supervisor:
 
     def resume(self) -> dict[str, Any]:
         state = self.load_state()
+        if state.get("version") != STATE_VERSION:
+            if state.get("phase") == "HUMAN_GATE":
+                return state
+            raise SupervisorError("legacy state is inspection-only; run state-migration-dry-run then state-migration-apply")
         if state["phase"] == "PLAN_COMPLETED":
             # A completed epoch is intentionally inert.  Even clearing an old
             # stop request would violate the read-only resume guarantee.
@@ -6562,6 +6708,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="validate a legacy policy and report its in-memory v2 conversion without writing",
     )
     migration.add_argument("--policy", type=Path, default=Path(PROJECT_POLICY_NAME))
+    state_migration = subparsers.add_parser(
+        "state-migration-dry-run", help="validate the supported state conversion without writing",
+    )
+    state_migration = subparsers.add_parser(
+        "state-migration-apply", help="archive and apply the validated state conversion",
+    )
+    state_migration = subparsers.add_parser(
+        "state-migration-rollback", help="restore the checksummed predecessor state snapshot",
+    )
     subparsers.add_parser("status", help="show supervisor state and the current quota snapshot")
     subparsers.add_parser("run", help="run safe ticket progression until an explicit stop state")
     subparsers.add_parser("resume", help="resume only from a safely checkpointed state")
@@ -6635,6 +6790,16 @@ def main(arguments: list[str] | None = None) -> int:
             return 2
     try:
         supervisor = Supervisor(repository_root(), progress=print)
+        if args.command in {"state-migration-dry-run", "state-migration-apply", "state-migration-rollback"}:
+            with supervisor.operation_lock():
+                if args.command == "state-migration-dry-run":
+                    result = supervisor.state_migration_dry_run()
+                elif args.command == "state-migration-apply":
+                    result = supervisor.apply_state_migration()
+                else:
+                    result = supervisor.rollback_state_migration()
+            print_json(result)
+            return 0
         if args.command == "status":
             print(supervisor.dashboard())
             return 0
