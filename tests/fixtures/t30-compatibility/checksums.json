@@ -1,0 +1,14 @@
+{
+  "algorithm": "sha256",
+  "files": {
+    "docs/implementation-plan.md": "89260c11bd07469982092058451f488738848861b537dc27082e15360c96b45d",
+    "docs/t30-ticket.md": "29c781c4775cf4771a52ea67488b75a7c1c094b65039a7ba4307ebc70d417193",
+    "engine.json": "0feb0ceca542d9c9b8127789133da630242e51ee181c04c63266ef4d864eab60",
+    "policy.json": "b74b817565f88feb7d5e80ab56c99a4a56135b10f215a878c0814d2217c34131",
+    "product/README.md": "629ad9b047ea0f3c26911a37f391ce8f27bb2c549248d9fd2dd26652d4658b7e",
+    "product/product/notes.txt": "824705f434771f0d9080b0853419d26a34fbc90d8e75287f57496b55c59cf044",
+    "product/workspace/draft.txt": "4f6d30fcc7654ddf367fa55e1a14102d49ad8e43a25de89661dbadeb957c1c5c",
+    "quota.json": "dc4c2b3f18504281727e714cdff823d88b28af4afd46ff68c7f0259a29b3fca7",
+    "state.json": "a75f707963621cf5b8a8779c2f665936a18874e5397d01a5f88d93ffa683f6d8"
+  }
+}

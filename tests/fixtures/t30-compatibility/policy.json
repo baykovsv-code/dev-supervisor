@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "expected_branch": "main",
+  "bootstrap_ticket": "T30",
+  "initial_completed_tickets": ["T00", "T01", "T02", "T03", "T04", "T05", "T06", "T07", "T08", "T09", "T10", "T11", "T12", "T13", "T14", "T15", "T16", "T17", "T18", "T19", "T20", "T21", "T22", "T23", "T24", "T25", "T26", "T27", "T28", "T29"],
+  "implementation_plan": "docs/architecture/implementation-plan.md",
+  "authoritative_documents": ["docs/architecture/implementation-plan.md"],
+  "supervisor_control_paths": ["dev", "dev-supervisor.json"],
+  "models": {
+    "implementation": {"model": "redacted-model", "reasoning_effort": "medium"},
+    "architecture": {"model": "redacted-model", "reasoning_effort": "high"},
+    "diagnostic": {"model": "redacted-model", "reasoning_effort": "high"},
+    "supervisor_repair": {"model": "redacted-model", "reasoning_effort": "high"}
+  },
+  "quota": {
+    "provider": "manual",
+    "max_snapshot_age_minutes": 30,
+    "implementation": {"five_hour_percent_left": 20, "weekly_percent_left": 15},
+    "architecture": {"five_hour_percent_left": 30, "weekly_percent_left": 20},
+    "diagnostic": {"five_hour_percent_left": 30, "weekly_percent_left": 20},
+    "supervisor_repair": {"five_hour_percent_left": 30, "weekly_percent_left": 20}
+  },
+  "periodic_checkpoint": {"max_completed_tickets": 3, "max_active_runtime_seconds": 10800, "max_model_invocations": 4},
+  "forecast": {"minimum_history_samples": 2},
+  "milestones": [],
+  "diagnostic": {"completed_same_ticket_recoveries": 2, "max_recent_runs": 4, "max_history_entries": 80, "max_artifact_bytes": 16000, "max_check_logs_per_run": 2, "max_ticket_context_bytes": 24000, "max_adr_documents": 3},
+  "model_watchdog": {"warning_seconds": 2700, "hard_timeout_seconds": 5400, "terminate_grace_seconds": 10},
+  "verification_commands": [],
+  "ticket_verification_commands": {},
+  "evidence_check_commands": {},
+  "host_verification_capabilities": {},
+  "human_evidence_gates": {},
+  "architecture_allowed_paths": ["docs/architecture/"],
+  "implementation_forbidden_paths": ["dev", "dev-supervisor.json"],
+  "supervisor_repair_repository": "external",
+  "supervisor_repair_verification_commands": []
+}
