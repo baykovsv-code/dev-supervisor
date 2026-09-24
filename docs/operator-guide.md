@@ -102,6 +102,71 @@ Before every run:
 Do not run T99. The milestone after T12 is the final human cutover gate and must not be
 released under Supervisor 1.x.
 
+## Periodic checkpoints between tickets
+
+Supervisor can stop between completed tickets when a configured periodic threshold is
+reached, for example:
+
+```text
+State: PERIODIC_CHECKPOINT
+Ticket: T02
+2 completed tickets reached the limit of 2
+resume_command: null
+```
+
+This is a successful bounded stop, not a failed ticket and not a quota checkpoint. The
+previous ticket has already passed verification/scope and has been committed; the next
+ticket has not started. `safe_to_power_off: true` means no model or verification
+process remains active.
+
+`resume_command: null` is decisive: an ordinary `./dev resume` must not cross this
+human gate. It will return the same `PERIODIC_CHECKPOINT` state. Likewise,
+`./dev quota set ...` only records a quota observation; it does not approve or release
+the checkpoint.
+
+Review before release:
+
+```bash
+cd /home/dev/Documents/dev-supervisor
+./dev status
+git status --short --branch
+git log --oneline --decorate -5
+```
+
+Confirm that:
+
+- the working tree is clean;
+- the reported HEAD equals the last successful ticket commit;
+- the expected tickets are completed and the next ticket is correct;
+- verification and compatibility tests passed;
+- no plan, architecture, scope, or operator decision needs correction.
+
+When no plan change is needed, release the gate with a meaningful review note:
+
+```bash
+./dev gate release --note "Reviewed T00-T01: commits and verification passed; tree clean; T02 may start"
+```
+
+Then ensure quota is still fresh. If status reports `Quota: OK` and the observation has
+not expired, the observation recorded while the gate was closed remains available. If
+it is missing, stale, or no longer trusted, record a new observation:
+
+```bash
+./dev quota set --five-hour <percent> --weekly <percent>
+```
+
+Finally continue the newly released `READY` state:
+
+```bash
+./dev resume
+```
+
+If review discovers a legitimate plan or architecture change, do not use an ordinary
+release note to bypass it. Keep the checkpoint closed and use the documented plan
+reconciliation/architecture-adoption workflow. If HEAD or the working-tree fingerprint
+changed after the checkpoint, gate release must fail closed; investigate rather than
+resetting or cleaning the tree.
+
 ## Completing personal-assistant T30
 
 T30 requires an owner-authenticated live PASS/FAIL test. Automated checks cannot
@@ -158,6 +223,79 @@ If diagnostics classify a failure as `SUPERVISOR_BUG`:
 
 Never "fix" this state by deleting `.self-repair-disabled` or pointing the live project
 at the mutable development checkout.
+
+## Commit ownership and timing
+
+The default rule is: the Supervisor owns implementation commits. After a ticket model
+passes verification and scope checks, the Supervisor creates the ticket commit and
+records that exact commit in runtime state. Do not pre-commit, amend, squash, rebase, or
+replace that work manually.
+
+### When a manual commit is allowed
+
+A manual operator commit is allowed only in one of these situations:
+
+1. The project is quiescent in `READY`, with `active_run: null`, `pending_commit: null`,
+   no gate, and a clean working tree before the edit. The change must be an explicitly
+   reviewed operator/control/documentation change outside an implementation ticket.
+2. A documented human or architecture gate explicitly requires a human-authored commit
+   and provides the matching adoption/reconciliation command.
+3. A reviewed migration/bootstrap procedure explicitly calls for a local commit before
+   the first managed run.
+
+For a small operator-documentation change between tickets, use this sequence:
+
+```bash
+./dev status
+git status --short --branch
+# edit only the reviewed file
+git diff --check
+git diff -- docs/operator-guide.md
+git add docs/operator-guide.md
+git commit -m "Document periodic checkpoint operation"
+./dev status
+```
+
+The pre-commit status must show `READY`; the post-commit status must still show the
+same current ticket, a clean tree, and no unexpected gate/run. Stage exact paths rather
+than using broad `git add .` in a repository with preserved or unrelated work.
+
+### When a manual commit is forbidden
+
+Do not manually commit, amend, rebase, stash, reset, or clean when:
+
+- a model, verification command, scope check, or Supervisor commit is active;
+- state is `IMPLEMENTING`, `VERIFYING`, `SCOPE_PENDING`, `COMMITTING`,
+  `RECOVER_MODEL`, or another non-quiescent phase;
+- a `PERIODIC_CHECKPOINT` or `HUMAN_GATE` is still closed, unless that exact gate
+  explicitly requires a human-authored commit;
+- the working tree is a recorded recovery, evidence, interrupted, or diagnostic
+  checkpoint;
+- `active_run` or `pending_commit` is present;
+- files belong to live T30 evidence or another preserved product checkpoint;
+- the proposed commit changes architecture/plan/scope without the corresponding human
+  approval and reconciliation workflow.
+
+In particular, do not commit documentation while a periodic checkpoint is closed.
+Release and verify the gate first; then make the documentation commit from `READY`
+before starting the next ticket.
+
+### Commit contents that are never allowed
+
+Never commit:
+
+- `.dev-supervisor/` runtime state, quota observations, locks, run artifacts, or local
+  engine bindings;
+- credentials, access tokens, account/browser data, or unredacted live evidence;
+- `/home/dev/Documents/dev-supervisor-runtime-1x/.self-repair-disabled` or other files
+  from the pinned runtime checkout;
+- unrelated dirty files merely to obtain a clean status;
+- generated changes outside the current ticket's reviewed scope.
+
+After Supervisor-created commits, preserve their identities because runtime lineage
+references them. Do not amend, squash, rebase, cherry-pick over, or force-push those
+commits while the managed lifecycle is active. If history must change, stop and use a
+separately reviewed recovery/migration procedure.
 
 ## Git and push
 
