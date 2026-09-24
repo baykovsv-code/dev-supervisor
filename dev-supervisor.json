@@ -1,0 +1,131 @@
+{
+  "architecture_allowed_paths": [
+    "docs/architecture/"
+  ],
+  "authoritative_documents": [
+    "BACKLOG.md",
+    "docs/architecture/requirements-index.md",
+    "docs/architecture/architecture.md",
+    "docs/architecture/implementation-plan.md"
+  ],
+  "bootstrap_ticket": "T01",
+  "diagnostic": {
+    "completed_same_ticket_recoveries": 2,
+    "max_adr_documents": 3,
+    "max_artifact_bytes": 16000,
+    "max_check_logs_per_run": 2,
+    "max_history_entries": 80,
+    "max_recent_runs": 4,
+    "max_ticket_context_bytes": 24000
+  },
+  "evidence_check_commands": {},
+  "expected_branch": "main",
+  "forecast": {
+    "minimum_history_samples": 2
+  },
+  "host_verification_capabilities": {},
+  "human_evidence_gates": {},
+  "implementation_forbidden_paths": [
+    "BACKLOG.md",
+    "docs/architecture/",
+    "dev-supervisor.json",
+    "dev"
+  ],
+  "implementation_plan": "docs/architecture/implementation-plan.md",
+  "initial_completed_tickets": [],
+  "milestones": [
+    {
+      "after_ticket": "T12",
+      "before_ticket": "T99",
+      "message": "Qualification is complete. Do not release this gate under Supervisor 1.x; review cutover and activate one immutable Supervisor 2.0 controller generation.",
+      "name": "Supervisor 2.0 cutover approval"
+    }
+  ],
+  "model_watchdog": {
+    "hard_timeout_seconds": 5400,
+    "terminate_grace_seconds": 10,
+    "warning_seconds": 2700
+  },
+  "models": {
+    "architecture": {
+      "model": "gpt-5.6-sol",
+      "reasoning_effort": "high"
+    },
+    "diagnostic": {
+      "model": "gpt-5.6-sol",
+      "reasoning_effort": "high"
+    },
+    "implementation": {
+      "model": "gpt-5.6-terra",
+      "reasoning_effort": "medium"
+    },
+    "supervisor_repair": {
+      "model": "gpt-5.6-sol",
+      "reasoning_effort": "high"
+    }
+  },
+  "periodic_checkpoint": {
+    "max_active_runtime_seconds": 7200,
+    "max_completed_tickets": 2,
+    "max_model_invocations": 3
+  },
+  "quota": {
+    "architecture": {
+      "five_hour_percent_left": 30,
+      "weekly_percent_left": 20
+    },
+    "diagnostic": {
+      "five_hour_percent_left": 30,
+      "weekly_percent_left": 20
+    },
+    "implementation": {
+      "five_hour_percent_left": 20,
+      "weekly_percent_left": 15
+    },
+    "max_snapshot_age_minutes": 30,
+    "provider": "manual",
+    "supervisor_repair": {
+      "five_hour_percent_left": 30,
+      "weekly_percent_left": 20
+    }
+  },
+  "supervisor_control_paths": [
+    "dev",
+    "dev-supervisor.json"
+  ],
+  "supervisor_repair_repository": "external",
+  "supervisor_repair_verification_commands": [],
+  "ticket_verification_commands": {},
+  "verification_commands": [
+    {
+      "command": [
+        "python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tests",
+        "-v"
+      ],
+      "name": "Supervisor unit tests"
+    },
+    {
+      "command": [
+        "python3",
+        "-m",
+        "py_compile",
+        "supervisor.py"
+      ],
+      "name": "Supervisor Python compilation"
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "name": "Git diff check"
+    }
+  ],
+  "version": 1
+}

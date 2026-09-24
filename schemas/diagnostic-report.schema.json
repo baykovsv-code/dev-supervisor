@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Development supervisor diagnostic classification",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "role",
+    "ticket",
+    "classification",
+    "rationale_summary",
+    "evidence_run_ids"
+  ],
+  "properties": {
+    "role": {"type": "string", "enum": ["diagnostic"]},
+    "ticket": {
+      "type": "string",
+      "pattern": "^(?:T|F)[0-9]{2}(?:\\.[0-9]+)?$"
+    },
+    "classification": {
+      "type": "string",
+      "enum": [
+        "PRODUCT_FIX",
+        "HOST_VERIFICATION_REQUIRED",
+        "SUPERVISOR_BUG",
+        "ARCHITECTURE_DECISION",
+        "HUMAN_DECISION_REQUIRED"
+      ]
+    },
+    "rationale_summary": {"type": "string", "pattern": ".+"},
+    "evidence_run_ids": {
+      "type": "array",
+      "items": {"type": "string", "pattern": ".+"}
+    }
+  }
+}

@@ -1,0 +1,27 @@
+#!/usr/bin/env python3
+"""Lightweight launcher for an externally managed development supervisor."""
+
+import json
+import os
+from pathlib import Path
+import runpy
+import sys
+
+
+ROOT = Path(__file__).resolve().parent
+binding_path = ROOT / ".dev-supervisor" / "engine.json"
+engine_override = os.environ.get("DEV_SUPERVISOR_HOME")
+if engine_override:
+    engine_root = Path(engine_override).expanduser().resolve()
+else:
+    try:
+        engine_root = Path(json.loads(binding_path.read_text(encoding="utf-8"))["engine_root"])
+    except (FileNotFoundError, KeyError, json.JSONDecodeError, TypeError) as error:
+        print(
+            "dev supervisor: engine binding is missing; run the standalone supervisor init command "
+            "or set DEV_SUPERVISOR_HOME",
+            file=sys.stderr,
+        )
+        raise SystemExit(2) from error
+os.environ["DEV_SUPERVISOR_PROJECT_ROOT"] = str(ROOT)
+runpy.run_path(str(engine_root / "supervisor.py"), run_name="__main__")

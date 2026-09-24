@@ -1,0 +1,9 @@
+#!/usr/bin/env python3
+"""Lightweight standalone launcher for the development supervisor."""
+
+from pathlib import Path
+import runpy
+
+
+ROOT = Path(__file__).resolve().parent
+runpy.run_path(str(ROOT / "supervisor.py"), run_name="__main__")

@@ -1,0 +1,291 @@
+{
+  "version": 1,
+  "expected_branch": "master",
+  "bootstrap_ticket": "T10",
+  "initial_completed_tickets": [
+    "T03", "F01", "T04", "F02", "T05", "F03", "T21", "T06", "T07", "T08", "T14", "T09"
+  ],
+  "implementation_plan": "docs/architecture/implementation-plan.md",
+  "authoritative_documents": [
+    "docs/PRODUCT_SPEC.md",
+    "docs/architecture/architecture.md",
+    "docs/architecture/contracts.md",
+    "docs/architecture/domain-model.md",
+    "docs/architecture/implementation-plan.md",
+    "docs/architecture/security.md",
+    "docs/architecture/storage.md",
+    "docs/architecture/testing.md"
+  ],
+  "supervisor_control_paths": [
+    "dev",
+    "dev-supervisor.json",
+    "tools/dev-supervisor/"
+  ],
+  "models": {
+    "implementation": {
+      "model": "gpt-5.6-terra",
+      "reasoning_effort": "medium"
+    },
+    "architecture": {
+      "model": "gpt-5.6-sol",
+      "reasoning_effort": "high"
+    },
+    "diagnostic": {
+      "model": "gpt-5.6-sol",
+      "reasoning_effort": "high"
+    },
+    "supervisor_repair": {
+      "model": "gpt-5.6-sol",
+      "reasoning_effort": "high"
+    }
+  },
+  "quota": {
+    "provider": "manual",
+    "max_snapshot_age_minutes": 30,
+    "implementation": {
+      "five_hour_percent_left": 20,
+      "weekly_percent_left": 15
+    },
+    "architecture": {
+      "five_hour_percent_left": 30,
+      "weekly_percent_left": 20
+    },
+    "diagnostic": {
+      "five_hour_percent_left": 30,
+      "weekly_percent_left": 20
+    },
+    "supervisor_repair": {
+      "five_hour_percent_left": 30,
+      "weekly_percent_left": 20
+    }
+  },
+  "diagnostic": {
+    "completed_same_ticket_recoveries": 2,
+    "max_recent_runs": 4,
+    "max_history_entries": 80,
+    "max_artifact_bytes": 16000,
+    "max_check_logs_per_run": 2,
+    "max_ticket_context_bytes": 24000,
+    "max_adr_documents": 3
+  },
+  "periodic_checkpoint": {
+    "max_completed_tickets": 3,
+    "max_active_runtime_seconds": 10800,
+    "max_model_invocations": 4
+  },
+  "model_watchdog": {
+    "warning_seconds": 2700,
+    "hard_timeout_seconds": 5400,
+    "terminate_grace_seconds": 10
+  },
+  "forecast": {
+    "minimum_history_samples": 2,
+    "fallback_ticket_hours": [1, 4]
+  },
+  "milestones": [
+    {
+      "name": "Pilot-A backend technical pilot",
+      "after_ticket": "T29",
+      "before_ticket": "T13",
+      "message": "The executable Pilot-A workflow is ready for real-data validation."
+    }
+  ],
+  "verification_commands": [
+    {
+      "name": "supervisor tests",
+      "command": ["python3", "-m", "unittest", "discover", "-s", "tools/dev-supervisor/tests", "-v"]
+    },
+    {
+      "name": "application ticket regressions",
+      "command": ["python3", "-m", "unittest", "discover", "-s", "apps/local-agent/application/tests", "-v"]
+    },
+    {
+      "name": "T21 HTTP and security regressions",
+      "command": ["python3", "-m", "unittest", "discover", "-s", "apps/local-agent/infra/http/tests", "-v"]
+    },
+    {
+      "name": "F01 storage regressions",
+      "command": ["python3", "-m", "unittest", "discover", "-s", "apps/local-agent/infra/storage/tests", "-v"]
+    },
+    {
+      "name": "F02 domain regressions",
+      "command": ["python3", "-m", "unittest", "discover", "-s", "apps/local-agent/domain/tests", "-v"]
+    },
+    {
+      "name": "F03 OpenAPI contract checks",
+      "command": ["python3", "apps/local-agent/api/check_contract.py", "--all"]
+    },
+    {
+      "name": "Python compilation and imports",
+      "command": ["python3", "-m", "compileall", "-q", "apps/local-agent", "tools/dev-supervisor"]
+    }
+  ],
+  "supervisor_repair_verification_commands": [
+    {
+      "name": "full supervisor tests",
+      "command": ["python3", "-m", "unittest", "discover", "-s", "tools/dev-supervisor/tests", "-v"]
+    },
+    {
+      "name": "supervisor Python compilation",
+      "command": ["python3", "-m", "py_compile", "tools/dev-supervisor/supervisor.py"]
+    }
+  ],
+  "host_verification_capabilities": {
+    "loopback-bind-eperm": {
+      "blocker_patterns": [
+        "(?is)(?=.*(?:AF_INET|loopback|socket))(?=.*(?:EPERM|Operation not permitted|PermissionError))(?=.*(?:real-process|lifecycle|runtime))"
+      ],
+      "completion_summary_patterns": [
+        "(?is)(?=.*(?:implementation|runtime))(?=.*(?:completed|complete|in place|provides))(?=.*(?:host|real-process))(?=.*(?:verification|checks?))"
+      ],
+      "required_report_check_patterns": [
+        "(?is)runtime/tests",
+        "(?is)passed",
+        "(?is)git diff --check"
+      ]
+    },
+    "pilot-a-loopback-bind-eperm": {
+      "blocker_patterns": [
+        "(?is)(?=.*(?:127\\.0\\.0\\.1|loopback|bind))(?=.*(?:EPERM|Operation not permitted|PermissionError))(?=.*(?:real-process|synthetic subprocess|rehearsal))"
+      ],
+      "completion_summary_patterns": [
+        "(?is)(?=.*(?:completed|complete))(?=.*(?:host|real-process))(?=.*verification)"
+      ],
+      "required_report_check_patterns": [
+        "(?is)test_runner\\.py",
+        "(?is)passed",
+        "(?is)py_compile"
+      ]
+    },
+    "t13-loopback-bind-eperm": {
+      "blocker_patterns": [
+        "(?is)(?=.*(?:socket|loopback))(?=.*(?:EPERM|Operation not permitted|PermissionError))(?=.*real-process)(?=.*runtime)"
+      ],
+      "completion_summary_patterns": [
+        "(?is)(?=.*T13)(?=.*repaired)(?=.*(?:checks? pass|checks? passed))(?=.*real-process)(?=.*verification)(?=.*(?:blocked|remains required))"
+      ],
+      "required_report_check_patterns": [
+        "(?is)runtime/tests",
+        "(?is)passed",
+        "(?is)git diff --check"
+      ]
+    }
+  },
+  "ticket_verification_commands": {
+    "F04": [
+      {
+        "name": "F04 same-origin runtime smoke checks",
+        "command": ["python3", "-m", "unittest", "discover", "-s", "apps/local-agent/runtime/tests", "-v"],
+        "mandatory": true,
+        "host_capabilities": ["loopback-bind-eperm"],
+        "unittest_evidence": {
+          "expected_test_count": 9,
+          "required_tests": ["test_sigint_restart_reuses_port_data_and_resets_csrf"]
+        },
+        "forbidden_output_patterns": [
+          "(?i)skipped",
+          "(?i)(?:PermissionError|EPERM|Operation not permitted)"
+        ]
+      }
+    ],
+    "T28": [
+      {
+        "name": "T28 real-process runtime lifecycle integration checks",
+        "command": ["python3", "-m", "unittest", "discover", "-s", "apps/local-agent/runtime/tests", "-v"],
+        "mandatory": true,
+        "host_capabilities": ["loopback-bind-eperm"],
+        "unittest_evidence": {
+          "expected_test_count": 9,
+          "required_tests": [
+            "test_public_flow_uses_one_runtime_dispatcher",
+            "test_sigint_restart_reuses_port_data_and_resets_csrf"
+          ]
+        },
+        "forbidden_output_patterns": [
+          "(?i)skipped",
+          "(?i)(?:PermissionError|EPERM|Operation not permitted)"
+        ]
+      }
+    ],
+    "T29": [
+      {
+        "name": "T29 Pilot-A synthetic subprocess rehearsal",
+        "command": ["python3", "-m", "unittest", "tools/pilot-a/tests/test_runner.py", "-v"],
+        "mandatory": true,
+        "host_capabilities": ["pilot-a-loopback-bind-eperm"],
+        "unittest_evidence": {
+          "expected_test_count": 13,
+          "required_tests": ["test_synthetic_subprocess_rehearsal"]
+        },
+        "forbidden_output_patterns": [
+          "(?i)skipped",
+          "(?i)(?:PermissionError|EPERM|Operation not permitted)"
+        ]
+      }
+    ],
+    "T13": [
+      {
+        "name": "T13 same-origin real-process acceptance checks",
+        "command": ["python3", "-m", "unittest", "discover", "-s", "apps/local-agent/runtime/tests", "-v"],
+        "mandatory": true,
+        "host_capabilities": ["t13-loopback-bind-eperm"],
+        "unittest_evidence": {
+          "expected_test_count": 9,
+          "required_tests": [
+            "test_public_flow_uses_one_runtime_dispatcher",
+            "test_sigint_restart_reuses_port_data_and_resets_csrf"
+          ]
+        },
+        "forbidden_output_patterns": [
+          "(?i)skipped",
+          "(?i)(?:PermissionError|EPERM|Operation not permitted)"
+        ]
+      }
+    ]
+  },
+  "evidence_check_commands": {
+    "T30": [
+      {
+        "name": "T30 synthetic capture fixtures",
+        "command": ["python3", "adapters/browser-extension/spike/check-fixtures.py"]
+      },
+      {
+        "name": "T30 worker contract checks",
+        "command": ["node", "adapters/browser-extension/spike/check-worker.cjs"]
+      },
+      {
+        "name": "T30 JavaScript syntax checks",
+        "command": ["node", "--check", "adapters/browser-extension/spike/capture.js"]
+      },
+      {
+        "name": "T30 panel JavaScript syntax check",
+        "command": ["node", "--check", "adapters/browser-extension/spike/panel.js"]
+      },
+      {
+        "name": "T30 worker JavaScript syntax check",
+        "command": ["node", "--check", "adapters/browser-extension/spike/worker.js"]
+      },
+      {
+        "name": "T30 operator aid syntax check",
+        "command": ["python3", "-c", "from pathlib import Path; compile(Path('adapters/browser-extension/spike/operator_aid.py').read_text(), 'operator_aid.py', 'exec')"]
+      }
+    ]
+  },
+  "human_evidence_gates": {
+    "T30": {
+      "message": "T30 preparation is complete enough for the required owner live PASS/FAIL run; the human evidence gate remains closed.",
+      "record_paths": ["docs/architecture/t30-live-evidence.md"]
+    }
+  },
+  "implementation_forbidden_paths": [
+    "docs/architecture/",
+    "apps/local-agent/api/openapi.yaml",
+    "apps/local-agent/infra/storage/migrations/",
+    "tools/dev-supervisor/",
+    ".gitignore",
+    "dev"
+  ],
+  "architecture_allowed_paths": [
+    "docs/architecture/"
+  ]
+}

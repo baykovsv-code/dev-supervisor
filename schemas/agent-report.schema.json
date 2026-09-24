@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Development supervisor agent report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "role",
+    "ticket",
+    "status",
+    "acceptance_passed",
+    "tests_passed",
+    "architecture_deviation",
+    "ambiguity",
+    "product_decision_required",
+    "next_ticket_safe",
+    "files_changed",
+    "summary",
+    "blockers",
+    "checks_run"
+  ],
+  "properties": {
+    "role": {
+      "type": "string",
+      "enum": ["implementation", "architecture"]
+    },
+    "ticket": {
+      "type": "string",
+      "pattern": "^(?:T|F)[0-9]{2}(?:\\.[0-9]+)?$"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["pass", "blocked", "environment_blocked", "fail"]
+    },
+    "acceptance_passed": {"type": "boolean"},
+    "tests_passed": {"type": "boolean"},
+    "architecture_deviation": {"type": "boolean"},
+    "ambiguity": {"type": "boolean"},
+    "product_decision_required": {"type": "boolean"},
+    "next_ticket_safe": {"type": "boolean"},
+    "files_changed": {
+      "type": "array",
+      "items": {"type": "string", "pattern": ".+"}
+    },
+    "summary": {"type": "string", "pattern": ".+"},
+    "blockers": {
+      "type": "array",
+      "items": {"type": "string", "pattern": ".+"}
+    },
+    "checks_run": {
+      "type": "array",
+      "items": {"type": "string", "pattern": ".+"}
+    }
+  }
+}
