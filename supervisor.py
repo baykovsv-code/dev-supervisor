@@ -50,6 +50,13 @@ CODEX_SUPPORTED_SCHEMA_KEYWORDS = frozenset({
     "exclusiveMaximum", "minItems", "maxItems",
 })
 DEFAULT_SUPERVISOR_CONTROL_PATHS = ("dev", PROJECT_POLICY_NAME)
+POLICY_VERSION = 2
+HOST_CAPABILITIES_NAME = "host-capabilities.json"
+CAPABILITY_NAMES = (
+    "self_modification",
+    "user_requested_modification",
+    "repository_push",
+)
 DIAGNOSTIC_CLASSIFICATIONS = frozenset({
     "PRODUCT_FIX", "HOST_VERIFICATION_REQUIRED", "SUPERVISOR_BUG",
     "ARCHITECTURE_DECISION", "HUMAN_DECISION_REQUIRED",
@@ -74,6 +81,134 @@ NETWORK_FAILURE_MARKERS = (
 
 class SupervisorError(RuntimeError):
     """A fail-closed supervisor error suitable for display."""
+
+
+def _capability_values(value: Any, *, source: str) -> dict[str, bool]:
+    """Validate one capability map; absence is deliberately an all-deny map."""
+    denied = dict.fromkeys(CAPABILITY_NAMES, False)
+    if value is None:
+        return denied
+    if not isinstance(value, dict) or set(value) - set(CAPABILITY_NAMES):
+        raise SupervisorError(f"{source} capabilities must contain only supported capability names")
+    for name, enabled in value.items():
+        if not isinstance(enabled, bool):
+            raise SupervisorError(f"{source} capability {name!r} must be a boolean")
+        denied[name] = enabled
+    return denied
+
+
+def migrate_legacy_policy(policy: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Return an in-memory v2 policy and an explicit, non-writing migration report."""
+    if policy.get("version") != 1:
+        raise SupervisorError("legacy policy migration only supports version 1")
+    migrated = deepcopy(policy)
+    migrated["version"] = POLICY_VERSION
+    # Preserve the 1.x absence semantics: only an explicit ``external`` selected
+    # the external repair boundary.
+    migrated.setdefault("supervisor_repair_repository", "embedded")
+    migrated["capabilities"] = _capability_values(policy.get("capabilities"), source="legacy project")
+    removed: list[str] = []
+    forecast = migrated.get("forecast")
+    if isinstance(forecast, dict) and "fallback_ticket_hours" in forecast:
+        forecast.pop("fallback_ticket_hours")
+        removed.append("forecast.fallback_ticket_hours")
+    return migrated, {
+        "from_version": 1,
+        "to_version": POLICY_VERSION,
+        "removed_fields": removed,
+        "writes_required": True,
+    }
+
+
+def validate_project_policy(policy: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Validate the versioned policy before it can authorize any operation."""
+    version = policy.get("version")
+    if isinstance(version, bool) or not isinstance(version, int):
+        raise SupervisorError(f"unsupported project policy version: {version!r}")
+    if version == 1:
+        migrated, migration = migrate_legacy_policy(policy)
+        validated, _ = validate_project_policy(migrated)
+        return validated, migration
+    if version != POLICY_VERSION:
+        raise SupervisorError(f"unsupported project policy version: {version!r}")
+    required = {
+        "version", "expected_branch", "bootstrap_ticket", "initial_completed_tickets",
+        "implementation_plan", "authoritative_documents", "supervisor_control_paths",
+        "supervisor_repair_repository", "models", "quota", "diagnostic",
+        "periodic_checkpoint", "model_watchdog", "forecast", "milestones",
+        "verification_commands", "supervisor_repair_verification_commands",
+        "host_verification_capabilities", "ticket_verification_commands",
+        "evidence_check_commands", "human_evidence_gates", "implementation_forbidden_paths",
+        "architecture_allowed_paths", "capabilities",
+    }
+    unknown = set(policy) - required
+    missing = required - set(policy)
+    if unknown or missing:
+        raise SupervisorError(
+            "project policy has unknown or missing keys: "
+            + ", ".join(sorted(unknown | missing))
+        )
+    capabilities = _capability_values(policy["capabilities"], source="project")
+    if policy["capabilities"] != capabilities:
+        raise SupervisorError("project policy capabilities must explicitly declare every capability")
+    if not isinstance(policy["forecast"], dict) or set(policy["forecast"]) != {"minimum_history_samples"}:
+        raise SupervisorError("project policy forecast must contain only minimum_history_samples")
+    minimum = policy["forecast"]["minimum_history_samples"]
+    if isinstance(minimum, bool) or not isinstance(minimum, int) or minimum < 1:
+        raise SupervisorError("forecast.minimum_history_samples must be a positive integer")
+    roles = {"implementation", "architecture", "diagnostic", "supervisor_repair"}
+    if not isinstance(policy["models"], dict) or set(policy["models"]) != roles:
+        raise SupervisorError("project policy models must declare exactly the supported roles")
+    for role, model in policy["models"].items():
+        if (
+            not isinstance(model, dict) or set(model) != {"model", "reasoning_effort"}
+            or not all(isinstance(model.get(key), str) and model[key] for key in model)
+        ):
+            raise SupervisorError(f"model policy for {role!r} is malformed")
+    quota = policy["quota"]
+    if not isinstance(quota, dict) or set(quota) != {"provider", "max_snapshot_age_minutes", *roles}:
+        raise SupervisorError("quota policy has unknown or missing keys")
+    if quota["provider"] != "manual":
+        raise SupervisorError("unsupported quota provider")
+    for name in ("max_snapshot_age_minutes",):
+        if isinstance(quota[name], bool) or not isinstance(quota[name], int) or quota[name] < 1:
+            raise SupervisorError(f"quota.{name} must be a positive integer")
+    for role in roles:
+        reserve = quota[role]
+        if not isinstance(reserve, dict) or set(reserve) != {"five_hour_percent_left", "weekly_percent_left"}:
+            raise SupervisorError(f"quota reserve for {role!r} has unknown or missing keys")
+        for name, value in reserve.items():
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not 0 <= value <= 100:
+                raise SupervisorError(f"quota reserve {role}.{name} must be a finite percentage between 0 and 100")
+    watchdog = policy["model_watchdog"]
+    if not isinstance(watchdog, dict) or set(watchdog) != {"warning_seconds", "hard_timeout_seconds", "terminate_grace_seconds"}:
+        raise SupervisorError("model_watchdog has unknown or missing keys")
+    if any(isinstance(watchdog[key], bool) or not isinstance(watchdog[key], int) or watchdog[key] < 0 for key in watchdog):
+        raise SupervisorError("model_watchdog values must be nonnegative integers")
+    if watchdog["warning_seconds"] > watchdog["hard_timeout_seconds"]:
+        raise SupervisorError("model_watchdog warning_seconds cannot exceed hard_timeout_seconds")
+    return deepcopy(policy), None
+
+
+def load_host_capability_grants(path: Path) -> tuple[dict[str, bool], dict[str, Any]]:
+    """Read host-only grants. Any absent or invalid grant fails closed, never raises authority."""
+    denied = dict.fromkeys(CAPABILITY_NAMES, False)
+    if not path.exists():
+        return denied, {"source": str(path), "status": "absent"}
+    try:
+        value = read_json(path)
+        if (
+            set(value) != {"version", "capabilities"}
+            or isinstance(value.get("version"), bool)
+            or value.get("version") != 1
+        ):
+            raise SupervisorError("host capability grants have an unsupported version or keys")
+        grants = _capability_values(value["capabilities"], source="host")
+        if value["capabilities"] != grants:
+            raise SupervisorError("host capabilities must explicitly declare every capability")
+        return grants, {"source": str(path), "status": "valid"}
+    except SupervisorError as error:
+        return denied, {"source": str(path), "status": "invalid", "error": str(error)}
 
 
 def utc_now() -> datetime:
@@ -406,7 +541,7 @@ def quota_refresh_instructions(_existing: dict[str, Any] | None) -> str:
 def default_project_policy(expected_branch: str) -> dict[str, Any]:
     """Return the smallest currently supported policy for a newly controlled repository."""
     return {
-        "version": 1,
+        "version": POLICY_VERSION,
         "expected_branch": expected_branch,
         "bootstrap_ticket": "T01",
         "initial_completed_tickets": [],
@@ -441,7 +576,8 @@ def default_project_policy(expected_branch: str) -> dict[str, Any]:
             "warning_seconds": 2700, "hard_timeout_seconds": 5400,
             "terminate_grace_seconds": 10,
         },
-        "forecast": {"minimum_history_samples": 2, "fallback_ticket_hours": [1, 4]},
+        "forecast": {"minimum_history_samples": 2},
+        "capabilities": dict.fromkeys(CAPABILITY_NAMES, False),
         "milestones": [],
         "verification_commands": [{"name": "Git diff check", "command": ["git", "diff", "--check"]}],
         "supervisor_repair_verification_commands": [],
@@ -498,7 +634,7 @@ def initialize_repository(target: Path, policy_path: Path | None = None) -> dict
         raise SupervisorError("refusing to overwrite existing dev or dev-supervisor.json")
     branch = git.branch() or "master"
     if policy_path is not None:
-        policy = read_json(policy_path.expanduser().resolve())
+        policy, _migration = validate_project_policy(read_json(policy_path.expanduser().resolve()))
     else:
         policy = default_project_policy(branch)
         plan = root / "docs/architecture/implementation-plan.md"
@@ -518,6 +654,7 @@ def initialize_repository(target: Path, policy_path: Path | None = None) -> dict
     policy["expected_branch"] = branch
     policy.setdefault("supervisor_control_paths", ["dev", PROJECT_POLICY_NAME])
     policy["supervisor_repair_repository"] = "external"
+    policy, _migration = validate_project_policy(policy)
     atomic_write_json(project_policy, policy)
     atomic_write_text(launcher, project_launcher_text())
     launcher.chmod(0o755)
@@ -1137,12 +1274,21 @@ class Supervisor:
     ):
         self.root = root.resolve()
         self.assets_dir = assets_dir.resolve()
-        self.policy = policy or read_json(self.root / PROJECT_POLICY_NAME)
+        supplied_policy = policy or read_json(self.root / PROJECT_POLICY_NAME)
+        self.policy, self.legacy_policy_migration = validate_project_policy(supplied_policy)
         self.runtime = self.root / ".dev-supervisor"
         self.state_path = self.runtime / "state.json"
         self.runs_dir = self.runtime / "runs"
         self.timing_path = self.runtime / "timing-history.json"
         self.stop_path = self.runtime / "stop-request.json"
+        self.host_capabilities_path = self.runtime / HOST_CAPABILITIES_NAME
+        self.host_capability_grants, self.host_capability_provenance = load_host_capability_grants(
+            self.host_capabilities_path
+        )
+        self.effective_capabilities = {
+            name: self.policy["capabilities"][name] and self.host_capability_grants[name]
+            for name in CAPABILITY_NAMES
+        }
         self.git = GitRepo(self.root)
         self.now = now
         self.progress = progress or (lambda _message: None)
@@ -1155,6 +1301,35 @@ class Supervisor:
             if self._uses_external_supervisor_repair() else self.model_runner
         )
         self.command_runner = command_runner or SubprocessCommandRunner()
+
+    def capability_allowed(self, capability: str) -> bool:
+        if capability not in CAPABILITY_NAMES:
+            raise SupervisorError(f"unsupported capability: {capability!r}")
+        return self.effective_capabilities[capability]
+
+    def require_capability(self, capability: str) -> None:
+        """Future mutation paths must call this before model or Git mutation."""
+        if not self.capability_allowed(capability):
+            raise SupervisorError(f"capability {capability!r} is disabled by project restriction or host grant")
+
+    def effective_configuration(self) -> dict[str, Any]:
+        """A secret-free status/audit representation of authority and its provenance."""
+        return {
+            "policy_version": self.policy["version"],
+            "capabilities": {
+                name: {
+                    "effective": self.effective_capabilities[name],
+                    "project_restriction": self.policy["capabilities"][name],
+                    "host_grant": self.host_capability_grants[name],
+                }
+                for name in CAPABILITY_NAMES
+            },
+            "provenance": {
+                "project_policy": str(self.root / PROJECT_POLICY_NAME),
+                "host_capability_grants": self.host_capability_provenance,
+                "legacy_migration": self.legacy_policy_migration,
+            },
+        }
 
     def _supervisor_control_paths(self) -> tuple[str, ...]:
         configured = self.policy.get("supervisor_control_paths", list(DEFAULT_SUPERVISOR_CONTROL_PATHS))
@@ -1413,6 +1588,7 @@ class Supervisor:
             "current_run_elapsed_seconds": elapsed,
             "last_completed_result": state.get("last_completed_result"),
             "forecast": forecast,
+            "effective_configuration": self.effective_configuration(),
             "next_actions": self._next_actions(state),
             "quiescent": state["phase"] in TERMINAL_STATES,
         }
@@ -1614,6 +1790,12 @@ class Supervisor:
             f"  Current ticket: {current}",
             f"  Completed/current stages: {value['last_completed_result'] or 'no completed stage recorded'} / {value['phase']}",
             f"  ETA: {value['forecast']['text']} (ETA is approximate)",
+            "",
+            "CAPABILITIES",
+            "  " + "; ".join(
+                f"{name}={'enabled' if details['effective'] else 'disabled'}"
+                for name, details in value["effective_configuration"]["capabilities"].items()
+            ),
             "",
             "NEXT",
         ])
@@ -6182,6 +6364,11 @@ def build_parser() -> argparse.ArgumentParser:
     initialize = subparsers.add_parser("init", help="initialize a Git repository for supervisor control")
     initialize.add_argument("repository", nargs="?", default=".")
     initialize.add_argument("--policy", type=Path)
+    migration = subparsers.add_parser(
+        "policy-migration-dry-run",
+        help="validate a legacy policy and report its in-memory v2 conversion without writing",
+    )
+    migration.add_argument("--policy", type=Path, default=Path(PROJECT_POLICY_NAME))
     subparsers.add_parser("status", help="show supervisor state and the current quota snapshot")
     subparsers.add_parser("run", help="run safe ticket progression until an explicit stop state")
     subparsers.add_parser("resume", help="resume only from a safely checkpointed state")
@@ -6236,8 +6423,25 @@ def main(arguments: list[str] | None = None) -> int:
         except SupervisorError as error:
             print(f"dev supervisor: {error}", file=sys.stderr)
             return 2
-    supervisor = Supervisor(repository_root(), progress=print)
+    if args.command == "policy-migration-dry-run":
+        try:
+            policy = read_json(args.policy.expanduser().resolve())
+            converted, migration_report = validate_project_policy(policy)
+            print_json({
+                "migration": migration_report or {
+                    "from_version": POLICY_VERSION,
+                    "to_version": POLICY_VERSION,
+                    "removed_fields": [],
+                    "writes_required": False,
+                },
+                "effective_capabilities": converted["capabilities"],
+            })
+            return 0
+        except SupervisorError as error:
+            print(f"dev supervisor: {error}", file=sys.stderr)
+            return 2
     try:
+        supervisor = Supervisor(repository_root(), progress=print)
         if args.command == "status":
             print(supervisor.dashboard())
             return 0
