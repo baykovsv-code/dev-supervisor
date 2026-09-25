@@ -33,8 +33,8 @@ class DocumentationGovernanceTests(unittest.TestCase):
         # F10's prerequisite makes these the pending authoritative-plan suffix.
         pending = (
             "f10-documentation-governance.md", "f11-protected-snapshot-recovery.md",
-            "11-legacy-cutover.md", "f12-macos-platform-qualification.md",
-            "12-personal-assistant-qualification.md", "99-cutover-sentinel.md",
+            "11-legacy-cutover.md", "12-personal-assistant-qualification.md",
+            "99-cutover-sentinel.md",
         )
         tickets = ROOT / "docs/architecture/tickets"
         for name in pending:

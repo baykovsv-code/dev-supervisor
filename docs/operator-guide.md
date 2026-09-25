@@ -143,7 +143,7 @@ cd /home/dev/Documents/dev-supervisor
 ```
 
 T00 creates the redacted `personal-assistant` compatibility fixture and no-model
-harness. Every implementation ticket through F12 in authoritative plan order must
+harness. Every implementation ticket through T11 in authoritative plan order must
 then pass that harness as part of the normal test suite. Intermediate revisions are
 tested only on isolated copies; they are never bound to live `personal-assistant`.
 

@@ -7,9 +7,8 @@ final human cutover decision.
 
 ## Prerequisites
 
-- T00-T11 and every inserted prerequisite, including F09, F10, F11, and F12, are
-  complete in authoritative plan order.
-- The macOS platform qualification evidence from F12 is current and linked.
+- T00-T11 and every inserted prerequisite, including F09, F10, and F11, are complete
+  in authoritative plan order.
 
 ## Scope
 
@@ -27,7 +26,7 @@ final human cutover decision.
 ## Acceptance criteria
 
 - All supported fixtures and fault injections pass.
-- Compatibility evidence from every implementation-ticket commit through F12 in
+- Compatibility evidence from every implementation-ticket commit through T11 in
   authoritative plan order, including inserted prerequisites, is present and linked;
   T12 is the final
   integration rehearsal, not the first personal-assistant compatibility check.
@@ -43,8 +42,8 @@ final human cutover decision.
 
 `Required — operator runbook and qualification evidence.` Update the normative English
 qualification/cutover runbook and every affected maintained Russian operator document.
-Include the qualified macOS environment, support boundary, preflight, abort conditions,
-F12 evidence links, translation-manifest freshness, and final-gate evidence links.
+Include preflight, abort conditions, translation-manifest freshness, and final-gate
+evidence links.
 
 ## Non-goals
 

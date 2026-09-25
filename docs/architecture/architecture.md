@@ -30,19 +30,18 @@ The engine operates as a single local process. A module split is allowed only wh
 ticket proves that it reduces state-machine, schema, or test risk; packaging, plugins,
 and services are non-goals.
 
-## Supported host platforms
+## Initial host-platform scope
 
-Linux remains the existing implementation and regression baseline. Supervisor 2.0
-also targets contemporary Apple Silicon Macs running an Apple-supported macOS release
-with maintained compatible Python 3, Git, and Codex CLI versions. Support is based on
-recorded qualification, not inferred merely from macOS providing Unix/POSIX APIs.
+Linux remains the implementation, regression, and initial cutover platform for
+Supervisor 2.0. macOS qualification is deliberately deferred to the 2.1 backlog so it
+does not prolong operation under the legacy 1.x controller. The initial 2.0 release
+makes no macOS support claim merely because macOS provides Unix/POSIX APIs.
 
-Qualification records the exact Mac hardware identifier, CPU architecture, macOS
-build, filesystem characteristics, Python, Git, and Codex CLI versions used. The
-support contract rolls forward through requalification rather than promising an
-unknown fixed minimum version. Intel Macs, obsolete macOS releases, and software
-versions not covered by qualification evidence remain best-effort and are not part of
-the initial 2.0 support claim.
+The 2.1 candidate must accommodate a restricted workplace Mac: code and a self-test
+bundle may enter the host, but code, logs, and generated artifacts cannot leave it.
+Qualification therefore uses local checks plus a deliberately lower-assurance human
+attestation; the main repository never treats unavailable raw evidence as if it had
+been independently verified.
 
 Platform-specific handling is permitted only when it preserves the same locking,
 atomic-write, process-termination, Git, migration, capability, audit, and fail-closed
@@ -257,8 +256,6 @@ the controller used by the live T30 gate.
 - add schema and transition tests for every new state and capability;
 - inject crashes before and after each durable write, commit, push, and binding switch;
 - test denial paths as first-class behavior;
-- run the full suite and an isolated end-to-end platform rehearsal on the qualifying
-  macOS host, recording the exact environment and any bounded platform adaptations;
 - qualify migration and rollback on an isolated copy of real `personal-assistant`
   state before live cutover;
 - keep manual owner gates for real credentials, browser/account evidence, and final

@@ -8,6 +8,12 @@ The consolidated English requirement index is
 Its source lineage includes the Russian backlog and AS-IS assessment prepared in the
 legacy repository at commit `854083f51c9aedf33ec2d9654fc67aacff84af8a`.
 
+## Supervisor 2.1 candidates
+
+- [Restricted-workplace macOS qualification](docs/backlog/macos-platform-qualification-2.1.md)
+  is deliberately deferred until Supervisor 2.0 controls its own successor
+  development. It is not a prerequisite for the initial Linux-hosted 2.0 cutover.
+
 ## Safety clarification
 
 Self-modification, user-requested out-of-plan modification, and `git push` are
