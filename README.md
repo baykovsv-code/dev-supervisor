@@ -49,6 +49,6 @@ git diff --check
 ```
 
 Documentation pairing, links, and freshness are governed by
-[documentation governance](docs/documentation-governance.md). The retained migration
-and rollback guarantees are summarized in the operator guide; historical material is
-recoverable from Git history and is not a current runbook.
+[documentation governance](docs/documentation-governance.md). Current migration and
+rollback guarantees are summarized in the operator guide; exact 1.x and 2.0 records
+are recoverable from Git history and are not current runbooks.

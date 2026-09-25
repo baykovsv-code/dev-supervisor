@@ -4341,13 +4341,13 @@ class LegacyCutoverTests(unittest.TestCase):
         (self.root / "docs/architecture/implementation-plan.md").write_text(
             "| Milestone | Tickets | Gate |\n|---|---|---|\n| 1 | T30 | human |\n", encoding="utf-8",
         )
-        policy = json.loads((MODULE_PATH.parent / "tests/fixtures/t30-compatibility/policy.json").read_text(encoding="utf-8"))
+        policy = json.loads((MODULE_PATH.parent / "tests/fixtures/legacy-cutover/policy.json").read_text(encoding="utf-8"))
         policy["implementation_plan"] = "docs/architecture/implementation-plan.md"
         (self.root / "dev-supervisor.json").write_text(json.dumps(policy), encoding="utf-8")
         runtime = self.root / ".dev-supervisor"
         runtime.mkdir()
         (runtime / "engine.json").write_text(json.dumps({"engine_root": str(legacy)}), encoding="utf-8")
-        quota = json.loads((MODULE_PATH.parent / "tests/fixtures/t30-compatibility/quota.json").read_text(encoding="utf-8"))
+        quota = json.loads((MODULE_PATH.parent / "tests/fixtures/legacy-cutover/quota.json").read_text(encoding="utf-8"))
         (runtime / "quota.json").write_text(json.dumps(quota), encoding="utf-8")
         (runtime / "runs/r1").mkdir(parents=True)
         (runtime / "runs/r1/invocation.json").write_text('{"legacy": true}\n', encoding="utf-8")

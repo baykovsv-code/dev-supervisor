@@ -41,8 +41,8 @@ receipts, bindings, or run evidence.
 
 | Material | Classification | Preserved current route |
 |---|---|---|
-| 1.x architecture, state-machine, principles, limitations, quickstart, and assessment narratives | archived history | Operator guide: mental model, gates, safe stops, recovery, migration, and rollback. |
-| Completed 2.0 architecture, requirements, plan, tickets, and cutover runbooks | archived history | Operator guide: authority, single writer, lifecycle, recovery, migration, engine update, rollback, commits, and push. |
+| 1.x architecture, state-machine, principles, limitations, quickstart, migration, and assessment narratives | archived history at `v2.0.0` | Operator guide: mental model, gates, safe stops, recovery, migration, and rollback. |
+| Completed 2.0 architecture, requirements, plan, tickets, compatibility fixture, and cutover runbooks | archived history at `v2.0.0` | Operator guide: authority, single writer, lifecycle, recovery, migration, engine update, rollback, commits, and push. |
 | Current 2.1 backlog and deferred platform qualification | current | [BACKLOG.md](../BACKLOG.md) and [2.1 candidate](backlog/supervisor-2.1.md). |
 
 Use Git history to inspect historical evidence; it is not a live recovery dependency.
@@ -52,14 +52,15 @@ historical document.
 
 ## Approved 2.1 neutralization boundary
 
-The completed 2.0 baseline is the exact commit tagged `v2.0.0`. T20 may remove or
-rewrite obsolete tracked 1.x and 2.0 architecture, cutover, and qualification material
-after the current operator guide preserves every still-supported invariant and
-recovery route. Git history is not rewritten. Ignored runtime archives, engine
-checkouts, bindings, receipts, and run evidence remain untouched.
+The completed 2.0 baseline is the exact commit tagged `v2.0.0`. Its obsolete tracked
+1.x and 2.0 architecture, cutover, qualification, and fixture material is retired
+from this working tree only after the current operator guide preserves every
+still-supported invariant and recovery route. Git history is not rewritten. Ignored
+runtime archives, engine checkouts, bindings, receipts, and run evidence remain
+untouched.
 
-To make the T20 commit a genuinely neutral predecessor, T20 also owns the minimum
-replacement or removal of the existing project-specific compatibility fixture and its
-directly identity-coupled tests and documentation. T22 still owns the generic
-compatibility expansion, bounded self-hosted acceptance loop, and its fault matrix.
-The active materialized 2.1 plan remains immutable while this boundary is applied.
+To make the T20 commit a genuinely neutral predecessor, the identity-coupled
+compatibility fixture and its direct tests and documentation are historical material
+as well. T22 owns the replacement generic compatibility expansion, bounded
+self-hosted acceptance loop, and its fault matrix. The active materialized 2.1 plan
+remains immutable while this boundary is applied.
