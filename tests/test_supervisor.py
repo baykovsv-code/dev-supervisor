@@ -2556,10 +2556,11 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(pending_migration["status"], "unsupported")
         self.assertIn("final-ticket commit", pending_migration["reason"])
 
-    def test_explicit_v5_to_v6_state_migration_is_dry_run_safe_idempotent_and_rollbackable(self):
+    def test_explicit_v6_to_v7_state_migration_is_dry_run_safe_idempotent_and_rollbackable(self):
         supervisor = self.make_supervisor()
         source = supervisor.load_state()
-        source["version"] = 5
+        source["version"] = 6
+        source.pop("pending_push")
         supervisor.runtime.mkdir(parents=True, exist_ok=True)
         supervisor_module.atomic_write_json(supervisor.state_path, source)
         before = supervisor_module.read_json(supervisor.state_path)
@@ -2574,7 +2575,8 @@ class SupervisorTests(unittest.TestCase):
 
         self.assertEqual(supervisor.apply_state_migration(), dry_run)
         migrated = supervisor.load_state(read_only=True)
-        self.assertEqual(migrated["version"], 6)
+        self.assertEqual(migrated["version"], 7)
+        self.assertIsNone(migrated["pending_push"])
         self.assertEqual(migrated["state_predecessor"]["checksum"], dry_run["source_checksum"])
         self.assertFalse(supervisor.apply_state_migration()["writes_required"])
         rollback = supervisor.rollback_state_migration()

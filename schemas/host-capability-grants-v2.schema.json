@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Development Supervisor host capability grants v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "capabilities", "push_target"],
+  "properties": {
+    "version": {"const": 2},
+    "capabilities": {
+      "type": "object", "additionalProperties": false,
+      "required": ["self_modification", "user_requested_modification", "repository_push"],
+      "properties": {
+        "self_modification": {"type": "boolean"},
+        "user_requested_modification": {"type": "boolean"},
+        "repository_push": {"type": "boolean"}
+      }
+    },
+    "push_target": {
+      "type": "object", "additionalProperties": false,
+      "required": ["remote", "url", "branch"],
+      "properties": {
+        "remote": {"type": "string"},
+        "url": {"type": "string"},
+        "branch": {"type": "string"}
+      }
+    }
+  }
+}

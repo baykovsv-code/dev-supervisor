@@ -34,6 +34,15 @@ class PolicyContractTests(unittest.TestCase):
         path.parent.mkdir()
         path.write_text(json.dumps({"version": 1, "capabilities": capabilities}), encoding="utf-8")
 
+    def write_host_push_grants(self, target):
+        path = self.root / ".dev-supervisor" / "host-capabilities.json"
+        path.parent.mkdir(exist_ok=True)
+        path.write_text(json.dumps({
+            "version": 2,
+            "capabilities": dict.fromkeys(module.CAPABILITY_NAMES, True),
+            "push_target": target,
+        }), encoding="utf-8")
+
     def test_capabilities_are_independent_and_intersect_host_and_repository(self):
         self.write_host_grants({
             "self_modification": True,
@@ -88,6 +97,29 @@ class PolicyContractTests(unittest.TestCase):
         self.assertEqual(report["removed_fields"], ["forecast"])
         self.assertNotIn("forecast", migrated)
         self.assertEqual(migrated["capabilities"], dict.fromkeys(module.CAPABILITY_NAMES, False))
+
+    def test_host_push_target_rejects_credentials_and_legacy_grants_have_no_target(self):
+        self.write_host_grants(dict.fromkeys(module.CAPABILITY_NAMES, True))
+        legacy = self.supervisor()
+        self.assertIsNone(legacy.host_push_target)
+        self.write_host_push_grants({"remote": "canonical", "url": "https://token@github.example/repo.git", "branch": "main"})
+        rejected = self.supervisor()
+        self.assertFalse(rejected.capability_allowed("repository_push"))
+        self.assertIsNone(rejected.host_push_target)
+
+    def test_verified_push_target_requires_exact_branch_and_remote_urls(self):
+        self.write_host_push_grants({"remote": "canonical", "url": "file:///tmp/isolated.git", "branch": "main"})
+        policy = deepcopy(self.policy)
+        policy["capabilities"]["repository_push"] = True
+        supervisor = self.supervisor(policy)
+
+        class LocalGit:
+            def branch(self): return "main"
+            def remote_urls(self, _remote): return (["file:///tmp/redirect.git"], ["file:///tmp/redirect.git"])
+
+        supervisor.git = LocalGit()
+        with self.assertRaisesRegex(module.SupervisorError, "exactly match"):
+            supervisor._verified_push_target()
 
 
 if __name__ == "__main__":

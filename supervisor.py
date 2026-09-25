@@ -23,6 +23,7 @@ import sys
 import tempfile
 import time
 from typing import Any, Callable, Iterable, Protocol
+from urllib.parse import urlsplit
 import uuid
 
 
@@ -70,7 +71,7 @@ TERMINAL_STATES = {
     "PERIODIC_CHECKPOINT", "INTERRUPTED", "DIAGNOSTIC_FAILED",
     "SUPERVISOR_REPAIR_FAILED", "PLAN_COMPLETED", "MIGRATION_BLOCKED",
 }
-STATE_VERSION = 6
+STATE_VERSION = 7
 STATE_PREDECESSORS_DIRECTORY = "state-predecessors"
 COLD_START_STATE_NAME = "cold-start.json"
 COLD_START_DIRECTORY = "cold-start"
@@ -270,25 +271,59 @@ def validate_project_policy(policy: dict[str, Any]) -> tuple[dict[str, Any], dic
     return deepcopy(policy), None
 
 
-def load_host_capability_grants(path: Path) -> tuple[dict[str, bool], dict[str, Any]]:
+def _validate_push_target(value: Any) -> dict[str, str]:
+    """Validate a credential-free host-owned Git destination without probing it."""
+    if not isinstance(value, dict) or set(value) != {"remote", "url", "branch"}:
+        raise SupervisorError("host push target must contain only remote, url, and branch")
+    remote, url, branch = value.get("remote"), value.get("url"), value.get("branch")
+    if not all(isinstance(item, str) and item for item in (remote, url, branch)):
+        raise SupervisorError("host push target values must be nonempty strings")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", remote) or remote.startswith("-"):
+        raise SupervisorError("host push target remote name is malformed")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", branch) or branch.startswith("-") or ".." in branch or branch.endswith("."):
+        raise SupervisorError("host push target branch is malformed")
+    if any(character.isspace() or ord(character) < 32 for character in url):
+        raise SupervisorError("host push target URL is malformed")
+    parsed = urlsplit(url)
+    if parsed.scheme in {"http", "https", "git"} and (parsed.username or parsed.password):
+        raise SupervisorError("host push target URL must not contain credentials")
+    if parsed.password is not None or parsed.query or parsed.fragment:
+        raise SupervisorError("host push target URL must not contain credentials or query data")
+    scp_style = re.fullmatch(r"(?:[A-Za-z0-9._-]+@)?[A-Za-z0-9._-]+:[^\\s:]+", url)
+    if parsed.scheme not in {"ssh", "https", "http", "file"} and not scp_style:
+        raise SupervisorError("host push target URL has an unsupported identity format")
+    if parsed.scheme and not parsed.netloc and parsed.scheme != "file":
+        raise SupervisorError("host push target URL is malformed")
+    if parsed.scheme == "file" and (not parsed.path or parsed.netloc not in {"", "localhost"}):
+        raise SupervisorError("host push target file URL is malformed")
+    return {"remote": remote, "url": url, "branch": branch}
+
+
+def load_host_capability_grants(path: Path) -> tuple[dict[str, bool], dict[str, Any], dict[str, str] | None]:
     """Read host-only grants. Any absent or invalid grant fails closed, never raises authority."""
     denied = dict.fromkeys(CAPABILITY_NAMES, False)
     if not path.exists():
-        return denied, {"source": str(path), "status": "absent"}
+        return denied, {"source": str(path), "status": "absent"}, None
     try:
         value = read_json(path)
         if (
-            set(value) != {"version", "capabilities"}
+            not isinstance(value.get("version"), int)
+            or set(value) not in ({"version", "capabilities"}, {"version", "capabilities", "push_target"})
             or isinstance(value.get("version"), bool)
-            or value.get("version") != 1
+            or value.get("version") not in {1, 2}
         ):
             raise SupervisorError("host capability grants have an unsupported version or keys")
+        if value["version"] == 1 and set(value) != {"version", "capabilities"}:
+            raise SupervisorError("v1 host capability grants cannot define a push target")
+        if value["version"] == 2 and set(value) != {"version", "capabilities", "push_target"}:
+            raise SupervisorError("v2 host capability grants require an explicit push target")
         grants = _capability_values(value["capabilities"], source="host")
         if value["capabilities"] != grants:
             raise SupervisorError("host capabilities must explicitly declare every capability")
-        return grants, {"source": str(path), "status": "valid"}
+        target = _validate_push_target(value["push_target"]) if value["version"] == 2 else None
+        return grants, {"source": str(path), "status": "valid", "version": value["version"]}, target
     except SupervisorError as error:
-        return denied, {"source": str(path), "status": "invalid", "error": str(error)}
+        return denied, {"source": str(path), "status": "invalid", "error": str(error)}, None
 
 
 def utc_now() -> datetime:
@@ -919,6 +954,24 @@ class GitRepo:
     def cached_files(self) -> list[str]:
         raw = self.run("diff", "--cached", "--name-only", "-z").stdout
         return sorted(path for path in raw.split("\0") if path)
+
+    def remote_urls(self, remote: str) -> tuple[list[str], list[str]]:
+        """Read configured fetch and push URLs without contacting a remote."""
+        fetch = self.run("config", "--get-all", f"remote.{remote}.url", check=False)
+        push = self.run("config", "--get-all", f"remote.{remote}.pushurl", check=False)
+        fetch_urls = [item for item in fetch.stdout.splitlines() if item]
+        push_urls = [item for item in push.stdout.splitlines() if item]
+        return fetch_urls, push_urls or fetch_urls
+
+    def push_exact(self, remote: str, commit: str, branch: str) -> bool:
+        return self.run("push", remote, f"{commit}:refs/heads/{branch}", check=False).returncode == 0
+
+    def remote_branch_commit(self, remote: str, branch: str) -> str | None:
+        result = self.run("ls-remote", "--refs", remote, f"refs/heads/{branch}", check=False)
+        if result.returncode:
+            return None
+        fields = result.stdout.strip().split()
+        return fields[0] if len(fields) == 2 and re.fullmatch(r"[0-9a-f]{40,64}", fields[0]) else None
 
 
 def _admission_relative_path(root: Path, value: str) -> Path:
@@ -1697,11 +1750,15 @@ class Supervisor:
         self.timing_path = self.runtime / "timing-history.json"
         self.stop_path = self.runtime / "stop-request.json"
         self.host_capabilities_path = self.runtime / HOST_CAPABILITIES_NAME
-        self.host_capability_grants, self.host_capability_provenance = load_host_capability_grants(
+        self.host_capability_grants, self.host_capability_provenance, self.host_push_target = load_host_capability_grants(
             self.host_capabilities_path
         )
         self.effective_capabilities = {
-            name: self.policy["capabilities"][name] and self.host_capability_grants[name]
+            name: (
+                self.policy["capabilities"][name]
+                and self.host_capability_grants[name]
+                and (name != "repository_push" or self.host_push_target is not None)
+            )
             for name in CAPABILITY_NAMES
         }
         self.git = GitRepo(self.root)
@@ -1744,6 +1801,7 @@ class Supervisor:
             "provenance": {
                 "project_policy": str(self.root / PROJECT_POLICY_NAME),
                 "host_capability_grants": self.host_capability_provenance,
+                "host_push_target": self.host_push_target,
                 "legacy_migration": self.legacy_policy_migration,
             },
         }
@@ -2545,6 +2603,7 @@ class Supervisor:
             "plan_epochs": [epoch],
             "current_plan_epoch_id": epoch["epoch_id"],
             "history": [],
+            "pending_push": None,
             "updated_at": isoformat(self.now()),
         }
 
@@ -2621,16 +2680,16 @@ class Supervisor:
             raise SupervisorError("state predecessor checksum is malformed")
         return self.runtime / STATE_PREDECESSORS_DIRECTORY / f"{checksum}.json"
 
-    def _validate_state_v6(self, state: dict[str, Any]) -> str | None:
+    def _validate_state_v7(self, state: dict[str, Any]) -> str | None:
         predecessor = state.get("state_predecessor")
         if predecessor is None:
-            # A freshly initialized v6 runtime has no converted predecessor.
+            # A freshly initialized v7 runtime has no converted predecessor.
             return None
         required = {"version", "checksum", "archive"}
         if not isinstance(predecessor, dict) or set(predecessor) != required:
             return "versioned state predecessor linkage is missing or malformed"
         version, checksum, archive = predecessor.get("version"), predecessor.get("checksum"), predecessor.get("archive")
-        if version != 5 or not isinstance(checksum, str) or not re.fullmatch(r"[0-9a-f]{64}", checksum):
+        if version != 6 or not isinstance(checksum, str) or not re.fullmatch(r"[0-9a-f]{64}", checksum):
             return "versioned state predecessor identity is unsupported or malformed"
         if archive != f"{STATE_PREDECESSORS_DIRECTORY}/{checksum}.json":
             return "versioned state predecessor archive link is malformed"
@@ -2655,7 +2714,7 @@ class Supervisor:
         state = read_json(self.state_path)
         version = state.get("version")
         if version == STATE_VERSION:
-            error = self._validate_state_v6(state)
+            error = self._validate_state_v7(state)
             if error is not None:
                 raise SupervisorError(error)
             return {
@@ -2663,24 +2722,25 @@ class Supervisor:
                 "to_version": STATE_VERSION, "source_checksum": content_checksum(state),
                 "target_checksum": content_checksum(state), "writes_required": False,
             }
-        if version != 5:
-            raise SupervisorError(f"unsupported state migration source version: {version!r}; supported: 5 -> 6")
+        if version != 6:
+            raise SupervisorError(f"unsupported state migration source version: {version!r}; supported: 6 -> 7")
         error = self._epoch_error(state)
         if error is not None:
             raise SupervisorError("state migration source is malformed: " + error)
         source_checksum = content_checksum(state)
         migrated = deepcopy(state)
         migrated["version"] = STATE_VERSION
+        migrated["pending_push"] = None
         migrated["state_predecessor"] = {
-            "version": 5,
+            "version": 6,
             "checksum": source_checksum,
             "archive": f"{STATE_PREDECESSORS_DIRECTORY}/{source_checksum}.json",
         }
         migrated["audit_events"] = [audit_event("state_migrated", {
-            "from_version": 5, "to_version": STATE_VERSION, "source_checksum": source_checksum,
+            "from_version": 6, "to_version": STATE_VERSION, "source_checksum": source_checksum,
         })]
         return {
-            "status": "supported", "from_version": 5, "to_version": STATE_VERSION,
+            "status": "supported", "from_version": 6, "to_version": STATE_VERSION,
             "source_checksum": source_checksum, "target_checksum": content_checksum(migrated),
             "archive": migrated["state_predecessor"]["archive"], "writes_required": True,
         }
@@ -2705,11 +2765,12 @@ class Supervisor:
         # write validates and reuses the immutable archive.
         migrated = deepcopy(source)
         migrated["version"] = STATE_VERSION
+        migrated["pending_push"] = None
         migrated["state_predecessor"] = {
-            "version": 5, "checksum": report["source_checksum"], "archive": report["archive"],
+            "version": 6, "checksum": report["source_checksum"], "archive": report["archive"],
         }
         migrated["audit_events"] = [audit_event("state_migrated", {
-            "from_version": 5, "to_version": STATE_VERSION, "source_checksum": report["source_checksum"],
+            "from_version": 6, "to_version": STATE_VERSION, "source_checksum": report["source_checksum"],
         })]
         if content_checksum(migrated) != report["target_checksum"]:
             raise SupervisorError("state migration transformation was not deterministic")
@@ -2720,8 +2781,8 @@ class Supervisor:
         """Restore the checksummed v5 predecessor; no source version is guessed."""
         state = read_json(self.state_path)
         if state.get("version") != STATE_VERSION:
-            raise SupervisorError("state rollback only supports version 6")
-        error = self._validate_state_v6(state)
+            raise SupervisorError("state rollback only supports version 7")
+        error = self._validate_state_v7(state)
         if error is not None:
             raise SupervisorError(error)
         predecessor = state["state_predecessor"]
@@ -2813,7 +2874,7 @@ class Supervisor:
         epoch_error = self._epoch_error(state)
         if epoch_error is not None:
             raise SupervisorError(epoch_error)
-        predecessor_error = self._validate_state_v6(state)
+        predecessor_error = self._validate_state_v7(state)
         if predecessor_error is not None:
             raise SupervisorError(predecessor_error)
         if changed and not read_only:
@@ -6065,6 +6126,60 @@ class Supervisor:
             final_result=evidence,
         )
 
+    def _verified_push_target(self) -> dict[str, str]:
+        """Return the host target only after all local redirect checks pass."""
+        target = self.host_push_target
+        if target is None:
+            raise SupervisorError("repository push is enabled but the host push target is absent or invalid")
+        if self.git.branch() != self.policy["expected_branch"] or target["branch"] != self.policy["expected_branch"]:
+            raise SupervisorError("push target branch does not exactly match the checked-out and policy branch")
+        fetch_urls, push_urls = self.git.remote_urls(target["remote"])
+        if fetch_urls != [target["url"]] or push_urls != [target["url"]]:
+            raise SupervisorError("configured Git remote does not exactly match the host push target identity")
+        return dict(target)
+
+    def _push_failure_message(self) -> str:
+        """Do not persist Git transport output: it can contain credential-bearing URLs."""
+        return "Remote push or confirmation failed; verify credentials, network access, branch protection, and fast-forward status. The local commit is preserved."
+
+    def _reconcile_push(self, state: dict[str, Any]) -> bool:
+        pending = state.get("pending_push")
+        if not isinstance(pending, dict) or set(pending) != {"commit", "target"}:
+            self.transition(state, "GIT_BLOCKED", "Push checkpoint is malformed; the local commit is preserved.")
+            return False
+        try:
+            target = self._verified_push_target()
+        except SupervisorError as error:
+            self.transition(state, "GIT_BLOCKED", str(error) + "; the local commit is preserved.")
+            return False
+        if pending["target"] != target or pending.get("commit") != self.git.head():
+            self.transition(state, "GIT_BLOCKED", "Push checkpoint no longer matches the verified local commit and host target.")
+            return False
+        # Confirmation always precedes a retry, which makes a successful push followed
+        # by interruption idempotent and avoids a second required push.
+        remote_commit = self.git.remote_branch_commit(target["remote"], target["branch"])
+        if remote_commit != pending["commit"]:
+            self._append_audit_event(state, "push_attempted", {"commit": pending["commit"], "target": target})
+            self.save_state(state)
+            if not self.git.push_exact(target["remote"], pending["commit"], target["branch"]):
+                self.transition(state, "GIT_BLOCKED", self._push_failure_message())
+                return False
+            remote_commit = self.git.remote_branch_commit(target["remote"], target["branch"])
+        if remote_commit != pending["commit"]:
+            self.transition(state, "GIT_BLOCKED", self._push_failure_message())
+            return False
+        self._append_audit_event(state, "push_confirmed", {"commit": pending["commit"], "target": target})
+        pending_commit = state.get("pending_commit")
+        if not isinstance(pending_commit, dict):
+            self.transition(state, "GIT_BLOCKED", "Push confirmation lacks its local commit checkpoint.")
+            return False
+        pending_commit["persistence_reconciled"] = "REMOTELY_PERSISTED"
+        self.transition(
+            state, "COMMITTING", f"REMOTELY_PERSISTED {pending['commit'][:12]}",
+            pending_push=None, pending_commit=pending_commit,
+        )
+        return True
+
     def _finish_commit(self, state: dict[str, Any]) -> bool:
         commit_started = time.monotonic()
         pending = state["pending_commit"]
@@ -6142,7 +6257,25 @@ class Supervisor:
         commit_duration = time.monotonic() - commit_started
         self._add_active_runtime(state, commit_duration)
         state["last_commit"] = committed
-        state["last_completed_result"] = f"{role} commit {committed[:12]}"
+        if not pending.get("persistence_reconciled"):
+            if not self.capability_allowed("repository_push"):
+                pending["persistence_reconciled"] = "LOCALLY_COMMITTED"
+                self._append_audit_event(state, "locally_committed", {"commit": committed})
+                self.transition(
+                    state, "COMMITTING", f"LOCALLY_COMMITTED {committed[:12]}", pending_commit=pending,
+                )
+            else:
+                try:
+                    target = self._verified_push_target()
+                except SupervisorError as error:
+                    self.transition(state, "GIT_BLOCKED", str(error) + "; the local commit is preserved.")
+                    return False
+                self.transition(
+                    state, "PUSHING", f"Local commit {committed[:12]} awaits remote persistence.",
+                    pending_push={"commit": committed, "target": target}, pending_commit=pending,
+                )
+                return True
+        state["last_completed_result"] = f"{pending['persistence_reconciled']} {committed[:12]}"
         if role == "architecture":
             architecture_duration = (
                 state["active_run"].get("duration_seconds", 0.0)
@@ -7536,6 +7669,10 @@ class Supervisor:
                 self._emit(committed_ticket, "commit", str(state.get("last_commit", ""))[:12])
                 self._emit(state["current_ticket"], "next", state["current_ticket"])
                 continue
+            if phase == "PUSHING":
+                if not self._reconcile_push(state):
+                    break
+                continue
             break
         return state
 
@@ -7549,6 +7686,11 @@ class Supervisor:
             # A completed epoch is intentionally inert.  Even clearing an old
             # stop request would violate the read-only resume guarantee.
             return state
+        if state["phase"] == "PUSHING":
+            return self.run()
+        if state["phase"] == "GIT_BLOCKED" and state.get("pending_push") is not None:
+            self.transition(state, "PUSHING", "Retrying remote persistence for the preserved local commit.")
+            return self.run()
         if self.stop_path.exists():
             self.stop_path.unlink()
         if state["phase"] == "PERIODIC_CHECKPOINT":
