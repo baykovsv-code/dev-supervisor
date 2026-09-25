@@ -53,7 +53,7 @@ default-off capability boundary.
 - Resume after an interrupted successful push creates neither a duplicate commit nor a
   second required push.
 - Tests cover all backlog failure and confirmation cases with isolated remotes.
-- The T00 personal-assistant compatibility harness proves that an absent push
+- The T00 legacy-reference compatibility harness proves that an absent push
   capability adds no remote command, state mutation, or new prerequisite to the
   existing T30 human gate.
 

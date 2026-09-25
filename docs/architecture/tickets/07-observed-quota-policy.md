@@ -22,7 +22,7 @@ Implement the deterministic observed-quota policy in R09 without forecasting.
 - Every model call links to the exact authorizing observation.
 - No reset-time, future balance, ticket count, or quota availability prediction exists.
 - Unknown or malformed data starts no model process.
-- The T00 personal-assistant fixture's legacy quota ledger remains readable without
+- The T00 legacy-reference fixture's legacy quota ledger remains readable without
   reuse or mutation; any new ledger version includes dry-run conversion and rollback in
   this ticket.
 

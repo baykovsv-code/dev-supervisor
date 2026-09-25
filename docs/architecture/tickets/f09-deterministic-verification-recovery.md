@@ -30,7 +30,7 @@ completion gate.
   explicit resume uses the ordinary quota guard before any repair model invocation.
 - After repair, discard no required verification coverage: run the full configured
   verification suite, then the ordinary scope and commit gates.
-- Preserve interrupted-recovery idempotence and the T00 personal-assistant
+- Preserve interrupted-recovery idempotence and the T00 legacy-reference
   compatibility boundary.
 
 - Files/modules: `supervisor.py`, `schemas/`, `tests/`.
@@ -52,7 +52,7 @@ completion gate.
   alone cannot complete the ticket.
 - Crash and repeated-action tests prove the transition and audit are idempotent and do
   not create duplicate repair invocations or commits.
-- The T00 personal-assistant compatibility harness passes without state mutation, a
+- The T00 legacy-reference compatibility harness passes without state mutation, a
   model invocation, or a new prerequisite at its existing T30 human gate.
 
 ## Non-goals

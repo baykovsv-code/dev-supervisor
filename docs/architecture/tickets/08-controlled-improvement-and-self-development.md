@@ -23,7 +23,7 @@ Implement R11/R12 behind the default-off mutation capabilities.
 - No autonomous feature request or silent bug-to-feature expansion occurs.
 - Self-development cannot edit or activate the executing controller generation.
 - Iterative architecture correction and interruption preserve lineage.
-- The T00 personal-assistant compatibility harness passes with all new capabilities
+- The T00 legacy-reference compatibility harness passes with all new capabilities
   absent/disabled, and its existing T30 human gate is not reclassified.
 
 ## Non-goals

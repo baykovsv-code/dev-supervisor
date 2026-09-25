@@ -3,13 +3,13 @@
 ## Objective
 
 Make it impossible for ordinary development commits in this repository to hot-change
-the Supervisor engine used by live `personal-assistant`, and make compatibility with
+the Supervisor engine used by the live legacy reference project, and make compatibility with
 its T30 checkpoint a deterministic completion gate for every later ticket.
 
 ## Operational precondition
 
 Before the model run, an operator creates a detached engine checkout at extraction
-commit `41f6757`, binds live `personal-assistant` to it, and proves that `./dev status`
+commit `41f6757`, binds the live legacy reference project to it, and proves that `./dev status`
 returns the unchanged T30 `HUMAN_GATE`. The development model must not edit either the
 live project or that checkout.
 
@@ -39,7 +39,7 @@ live project or that checkout.
   rejects the supported legacy policy/state, starts a model/network process, or changes
   the product snapshot.
 - The full AS-IS suite plus the new compatibility test passes.
-- Later tickets require no live `personal-assistant` access to run the harness.
+- Later tickets require no live legacy-reference access to run the harness.
 
 ## Non-goals
 

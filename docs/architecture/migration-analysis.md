@@ -2,12 +2,15 @@
 
 Date: 2026-09-24
 
+Status: **historical 2.0 migration analysis, retained temporarily for the T20
+neutralization transition**.
+
 ## Decision
 
 No stop-factor prevents an AS-IS extraction into `dev-supervisor`. The development
-checkout must not remain the live `personal-assistant` engine while tickets modify it;
-a separate immutable AS-IS runtime checkout and rolling compatibility gate resolve that
-risk.
+checkout must not remain the live legacy reference project's engine while tickets
+modify it; a separate immutable AS-IS runtime checkout and rolling compatibility gate
+resolve that risk.
 
 ## Evidence reviewed
 
@@ -16,7 +19,7 @@ risk.
   summary documents;
 - the 2.0 backlog and migration RFC;
 - the existing `dev-supervisor` Git history and `BACKLOG.md`;
-- the live `personal-assistant` policy, engine binding, runtime state, Git state, and
+- the legacy reference project's policy, engine binding, runtime state, Git state, and
   implementation plan.
 
 ## Baselines
@@ -24,24 +27,25 @@ risk.
 - legacy engine: `854083f51c9aedf33ec2d9654fc67aacff84af8a`;
 - new repository before extraction:
   `dfb946c0096a2789272a76e4cc33bb0882c8745b`;
-- personal-assistant at inspection:
-  `68e51070ef44c4942c0b9eac049324165f3ef04c`.
+- legacy reference project at inspection: recorded in the historical `v2.0.0`
+  evidence rather than repeated in the neutral current tree.
 
 The 1.x regression suite passed: `Ran 156 tests ... OK`. Engine-owned executable files
 are copied byte-for-byte before any 2.0 ticket.
 
 ## Resolved findings
 
-1. `personal-assistant/.dev-supervisor/engine.json` already points to
-   `/home/dev/Documents/dev-supervisor`, but that repository initially lacked
+1. `<legacy-project>/.dev-supervisor/engine.json` already points to the engine checkout,
+   but that repository initially lacked
    `supervisor.py`. This alone caused `./dev status` to fail with
    `FileNotFoundError`; AS-IS extraction restores the referenced engine.
-2. `personal-assistant` is deliberately dirty at the T30 evidence gate. Its state is
-   `HUMAN_GATE`, there is no pending commit and no active supervisor/Codex process.
+2. The legacy reference project is deliberately dirty at the T30 evidence gate. Its
+   state is `HUMAN_GATE`, there is no pending commit and no active supervisor/Codex
+   process.
    The dirty files match the preserved T30 checkpoint and must not be cleaned,
    committed, or rewritten by migration.
 3. The old controller can manage the new repository because engine and managed-project
-   roots are distinct. The live `personal-assistant` engine is separately pinned to a
+   roots are distinct. The legacy reference project's engine is separately pinned to a
    detached AS-IS checkout, so development commits do not hot-change it.
 4. Intermediate 2.0 revisions are tested only against an isolated copy of the T30
    checkpoint. They never become live merely because a ticket commit passed.
@@ -70,9 +74,9 @@ requirements index and proposed architecture in this repository.
 1. Confirm the new repository is clean and `./dev status` reports T00 without invoking
    a model.
 2. Review and approve the English requirements, architecture, plan, and tickets.
-3. Confirm `personal-assistant/.dev-supervisor/engine.json` names the detached AS-IS
+3. Confirm `<legacy-project>/.dev-supervisor/engine.json` names the detached AS-IS
    runtime checkout, then run `./dev status` and verify T30, `HUMAN_GATE`, unchanged
-   HEAD, state checksum, and preserved nine-file checkpoint.
+   HEAD, state checksum, and preserved checkpoint.
 4. Exercise only the documented T30 human evidence workflow through that pinned
    runtime; development of `dev-supervisor` cannot change its engine files.
 5. Run T00 through the old controller to create the redacted fixture and compatibility

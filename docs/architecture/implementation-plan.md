@@ -1,21 +1,21 @@
 # Supervisor 2.0 dependency-ordered implementation plan
 
-Status: **PROPOSED — not executable before human approval of the architecture
-baseline**.
+Status: **historical completed 2.0 plan, retained temporarily for the T20
+neutralization transition; it is not the active 2.1 plan.**
 
-This is the canonical Supervisor-compatible plan/index. Each ticket is bounded and
+This was the canonical Supervisor-compatible 2.0 plan/index. Each ticket is bounded and
 must preserve the AS-IS suite unless its approved acceptance criteria intentionally
 replace behavior. Architecture documents are protected; implementation may not amend
 them silently.
 
 | Milestone | Tickets | Gate |
 |---|---|---|
-| 0 compatibility isolation | 00 | Live PA pinned to AS-IS; redacted T30 compatibility harness passes |
-| 1 safety foundation | 01 → 02 → 03 | Config/capability, lifecycle, and rolling PA compatibility invariants pass |
+| 0 compatibility isolation | 00 | Live legacy reference project pinned to AS-IS; redacted T30 compatibility harness passes |
+| 1 safety foundation | 01 → 02 → 03 | Config/capability, lifecycle, and rolling legacy-reference compatibility invariants pass |
 | 2 project admission and renewal | 04 → 05 → 06 | Scenario A/B/C fixtures pass; no implementation before approval |
 | 3 controlled operations | 07 → 08 → F09 → 09 | Quota, mutation, deterministic-verification recovery, and push denial/recovery tests pass |
 | 4 upgrades and migration | 10 → F10 → F11 → 11 | Documentation baseline/current operator set and protected-snapshot recovery pass before 1.x conversion/rollback rehearsals |
-| 5 qualification | 12 | Isolated personal-assistant rehearsal and operator review |
+| 5 qualification | 12 | Isolated legacy-reference rehearsal and operator review |
 | 6 cutover boundary | 99 | HUMAN_GATE; final documentation gate passes; never execute T99 under Supervisor 1.x |
 
 The exact order is **T00 → T01 → T02 → T03 → T04 → T05 → T06 → T07 → T08 → F09 → T09 → T10 → F10 → F11 → T11 → T12 → T99**.
@@ -41,9 +41,9 @@ controller generation.
   ticket through T11 in authoritative plan order, including F09, F10, and F11, must
   pass it before commit; a schema-changing ticket owns its legacy reader,
   migration dry-run, rejection path, and rollback rather than deferring them.
-- The live `personal-assistant` remains bound to detached AS-IS commit `41f6757`.
+- The legacy reference project remains bound to detached AS-IS commit `41f6757`.
   Intermediate development revisions are never activated on it.
-- No live `personal-assistant` write is permitted before T12 qualification and the
+- No live legacy-reference write is permitted before T12 qualification and the
   final human gate.
 - The post-T12 cutover gate validates the translation manifest, deterministic
   pair/link/staleness checks, current English and maintained Russian operator

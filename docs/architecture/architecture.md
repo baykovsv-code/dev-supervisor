@@ -1,10 +1,12 @@
-# Supervisor 2.0 proposed architecture baseline
+# Supervisor 2.0 historical architecture baseline
 
-Status: **PROPOSED — human approval required before T01**.
+Status: **COMPLETED at `v2.0.0`; retained temporarily for the T20 neutralization
+transition and superseded for current operation by the 2.1 operator material.**
 
 ## Purpose
 
-Evolve the preserved standalone 1.x supervisor into a minimal 2.0 controller that can
+This document records the evolution of the preserved standalone 1.x supervisor into a
+minimal 2.0 controller that can
 admit existing projects safely, complete and renew plans, control mutation and push
 authority explicitly, and upgrade without two controller generations writing the same
 project.
@@ -171,7 +173,7 @@ The cutover preserves product HEAD and working tree, atomically changes binding,
 read-only reconciliation, and requires human go/no-go. Unsupported or ambiguous state
 stops; it is never guessed.
 
-For the current extraction, `personal-assistant` remains at its existing T30
+For the original extraction, the legacy reference project remains at its existing T30
 `HUMAN_GATE`. Copying the byte-identical AS-IS engine into this repository repairs its
 initial path binding without converting product state. Before T00, the live project is
 rebound to a separate detached AS-IS checkout at extraction commit `41f6757`; the
@@ -244,7 +246,7 @@ the controller used by the live T30 gate.
 ## Verification strategy
 
 - preserve and run the complete 1.x unit suite at the extraction baseline;
-- run the T00 personal-assistant compatibility harness after every implementation
+- run the T00 legacy-reference compatibility harness after every implementation
   ticket;
 - stop an unchanged generic `VERIFICATION_FAILED` checkpoint from rerunning the same
   check; an explicit audited recovery action must first validate the exact model
@@ -256,10 +258,26 @@ the controller used by the live T30 gate.
 - add schema and transition tests for every new state and capability;
 - inject crashes before and after each durable write, commit, push, and binding switch;
 - test denial paths as first-class behavior;
-- qualify migration and rollback on an isolated copy of real `personal-assistant`
+- qualify migration and rollback on an isolated copy of the legacy reference project
   state before live cutover;
 - keep manual owner gates for real credentials, browser/account evidence, and final
   go/no-go decisions.
+
+## Supervisor 2.1 neutral documentation transition
+
+The 2.0 architecture, plan, ticket set, migration analysis, and qualification records
+are completed historical material after tag `v2.0.0`; they are not current operating
+instructions. T20 may retire their working-tree copies because the current English
+operator guide preserves the supported authority, lifecycle, compatibility,
+migration, engine-update, rollback, recovery, commit, and push contracts. Git history
+at `v2.0.0` remains the recovery source for the exact historical wording and evidence.
+
+Repository policy reserves `docs/architecture/` for architecture-resolution changes,
+so neutralizing or retiring material in that directory is performed by the T20
+architecture resolution. This is part of T20's approved public-neutral baseline, not a
+new runtime behavior or authority change. The resumed T20 implementation remains
+responsible for neutralizing the rest of the tracked public tree and must not change
+ignored runtime archives, engine checkouts, bindings, receipts, or run evidence.
 
 ## Human gate
 
