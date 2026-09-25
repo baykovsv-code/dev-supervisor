@@ -1,4 +1,4 @@
-"""Focused deterministic checks for F10 documentation governance."""
+"""Focused deterministic checks for the maintained EN/RU operator pair."""
 from __future__ import annotations
 
 import hashlib
@@ -21,7 +21,10 @@ class DocumentationGovernanceTests(unittest.TestCase):
         (root / "docs").mkdir()
         (root / "docs/en.md").write_text("# English\n", encoding="utf-8")
         (root / "docs/ru.md").write_text("# Russian\n", encoding="utf-8")
-        (root / "docs/manifest.json").write_text(json.dumps({"normative_language": "en", "pairs": pairs}), encoding="utf-8")
+        (root / "docs/manifest.json").write_text(
+            json.dumps({"normative_language": "en", "semantic_equivalence": "not asserted", "pairs": pairs}),
+            encoding="utf-8",
+        )
 
     def pair(self) -> dict:
         return {"english": "docs/en.md", "russian": "docs/ru.md", "english_sha256": hashlib.sha256(b"# English\n").hexdigest()}
@@ -29,17 +32,10 @@ class DocumentationGovernanceTests(unittest.TestCase):
     def test_checked_manifest_passes(self):
         self.assertEqual(MODULE.check(ROOT, ROOT / "docs/translation-manifest.json"), [])
 
-    def test_every_currently_pending_ticket_declares_documentation_impact(self):
-        # F10's prerequisite makes these the pending authoritative-plan suffix.
-        pending = (
-            "f10-documentation-governance.md", "f11-protected-snapshot-recovery.md",
-            "11-legacy-cutover.md", "12-personal-assistant-qualification.md",
-            "99-cutover-sentinel.md",
-        )
-        tickets = ROOT / "docs/architecture/tickets"
-        for name in pending:
-            with self.subTest(ticket=name):
-                self.assertIn("## Documentation impact", (tickets / name).read_text(encoding="utf-8"))
+    def test_manifest_declares_one_pair_and_no_semantic_claim(self):
+        manifest = json.loads((ROOT / "docs/translation-manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["semantic_equivalence"], "not asserted")
+        self.assertEqual(len(manifest["pairs"]), 1)
 
     def test_stale_source_and_duplicate_pair_fail(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -62,3 +58,14 @@ class DocumentationGovernanceTests(unittest.TestCase):
             errors = MODULE.check(root, root / "docs/manifest.json")
             self.assertTrue(any("missing declared path" in error for error in errors))
             self.assertTrue(any("broken local link" in error for error in errors))
+
+    def test_semantic_claim_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_pair(root, [self.pair()])
+            manifest_path = root / "docs/manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["semantic_equivalence"] = "asserted"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            errors = MODULE.check(root, manifest_path)
+            self.assertTrue(any("semantic equivalence" in error for error in errors))

@@ -1,59 +1,65 @@
 # Documentation governance
 
-English is the sole complete normative documentation set for Supervisor 2.0. Russian
-operator documents in the maintained subset are operational translations, not an
-independent authority. Where text differs or is incomplete, English controls.
+English is the complete normative documentation set. The Russian guide is a reviewed
+operational counterpart, not an independent authority. If the texts differ, English
+controls.
 
-## Maintained Russian operator subset
+## Maintained pair and review
 
-The bounded subset is [the Russian operator guide](operator-guide.ru.md), paired with
-the normative [English operator guide](operator-guide.md). Together with their linked
-normative English references, it covers introduction, core behavior, safety rules,
-commands and workflows, limitations, quota, gates, commit/push/self-modification, and
-recovery. It intentionally is not a complete translation of every English document.
+The sole maintained pair is [the English operator guide](operator-guide.md) and
+[the Russian operator guide](operator-guide.ru.md). It covers installation, the mental
+model, ordinary operation, quota, gates, safe stops, recovery, authority, commits,
+push, migration, rollback, and platform limits.
 
-`translation-manifest.json` declares this unique pair and records the SHA-256 digest
-of the English content that a translator reviewed. After a normative English change,
-the check fails until the paired Russian document is reviewed and the manifest digest
-is deliberately refreshed in the same reviewed change.
+`translation-manifest.json` records that unique pair and the SHA-256 digest of the
+English text reviewed with its Russian counterpart. Refresh the digest only after
+reviewing every maintained Russian section against the final English source. The
+manifest and its deterministic check establish pair uniqueness, local-link resolution,
+and source freshness only. They do not assess translation quality or assert semantic
+equivalence.
 
-Run the deterministic check from the repository root:
+Run from the repository root:
 
 ```bash
 python3 scripts/check_documentation.py
 ```
 
-It verifies declared-pair uniqueness and existence, local links in the manifest and
-maintained pair, and English-digest freshness. It does **not** establish translation
-quality or semantic equivalence, and it never makes Russian text normative.
+## Documentation impact
 
-## Ticket documentation impact
+Every implementation ticket declares `## Documentation impact`. `None` is an explicit
+reviewed classification. A behavior change updates affected normative English material
+and the maintained Russian guide in the same ticket, then refreshes the manifest after
+translation review.
 
-Every pending and future implementation ticket must contain a `## Documentation
-impact` section. `None` is an explicit reviewed classification. A behavior-changing
-ticket must update affected normative English operator material and every affected
-maintained Russian operator document in that same ticket, then refresh the manifest
-only after translation review. The implementation plan carries the same delivery rule.
+## Historical inventory and retention
 
-## Legacy-document inventory
+The following 1.x narratives and completed 2.0 specifications are historical, not
+current operating instructions. Their current-tree copies may be removed only after
+the operator guide preserves every still-supported invariant and route below. Removal
+does not rewrite Git history or delete ignored runtime archives, engine checkouts,
+receipts, bindings, or run evidence.
 
-This inventory covers the legacy source material transferred in the extraction
-analysis. Each listed document has exactly one lifecycle classification; classification
-does not authorize deletion.
-
-| Legacy document | Classification | Retention / current route |
+| Material | Classification | Preserved current route |
 |---|---|---|
-| [architecture-as-is.ru.md](architecture-as-is.ru.md) | archived | Historical 1.x architecture; retain through cutover/rollback. |
-| [state-machine.ru.md](state-machine.ru.md) | archived | Historical 1.x state evidence; retain through cutover/rollback. |
-| [principles.ru.md](principles.ru.md) | archived | Historical 1.x principles; retain through cutover/rollback. |
-| [limitations.ru.md](limitations.ru.md) | archived | Historical limits and migration rationale; retain through cutover/rollback. |
-| [quickstart.ru.md](quickstart.ru.md) | obsolete | Do not use as a 2.0 runbook; preserve as 1.x evidence through cutover/rollback. |
-| [backlog/supervisor-as-is-and-usage-ru.md](backlog/supervisor-as-is-and-usage-ru.md) | archived | Historical assessment index; retain through cutover/rollback. |
+| 1.x architecture, state-machine, principles, limitations, quickstart, and assessment narratives | archived history | Operator guide: mental model, gates, safe stops, recovery, migration, and rollback. |
+| Completed 2.0 architecture, requirements, plan, tickets, and cutover runbooks | archived history | Operator guide: authority, single writer, lifecycle, recovery, migration, engine update, rollback, commits, and push. |
+| Current 2.1 backlog and deferred platform qualification | current | [BACKLOG.md](../BACKLOG.md) and [2.1 candidate](backlog/supervisor-2.1.md). |
 
-Current operator material is [operator-guide.md](operator-guide.md) and its maintained
-Russian pair. [migration-analysis.md](architecture/migration-analysis.md) is
-transitional evidence. Migration, rollback, compatibility, and cutover evidence stays
-discoverable through the approved cutover and rollback window via the migration
-analysis, [T30 fixture](t30-compatibility-fixture.md), [T11](architecture/tickets/11-legacy-cutover.md),
-[T12](architecture/tickets/12-personal-assistant-qualification.md), and
-[T99](architecture/tickets/99-cutover-sentinel.md), regardless of classification.
+Use Git history to inspect historical evidence; it is not a live recovery dependency.
+Live recovery begins with `./dev status` and follows the current operator guide and
+the active policy/ticket. A recovery command must never point only to a removed
+historical document.
+
+## Approved 2.1 neutralization boundary
+
+The completed 2.0 baseline is the exact commit tagged `v2.0.0`. T20 may remove or
+rewrite obsolete tracked 1.x and 2.0 architecture, cutover, and qualification material
+after the current operator guide preserves every still-supported invariant and
+recovery route. Git history is not rewritten. Ignored runtime archives, engine
+checkouts, bindings, receipts, and run evidence remain untouched.
+
+To make the T20 commit a genuinely neutral predecessor, T20 also owns the minimum
+replacement or removal of the existing project-specific compatibility fixture and its
+directly identity-coupled tests and documentation. T22 still owns the generic
+compatibility expansion, bounded self-hosted acceptance loop, and its fault matrix.
+The active materialized 2.1 plan remains immutable while this boundary is applied.

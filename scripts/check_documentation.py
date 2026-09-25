@@ -48,6 +48,8 @@ def check(root: Path, manifest_path: Path) -> list[str]:
         return [f"invalid manifest: {error}"]
     if manifest.get("normative_language") != "en":
         return ["manifest must declare English (en) as normative_language"]
+    if manifest.get("semantic_equivalence") != "not asserted":
+        return ["manifest must explicitly state that semantic equivalence is not asserted"]
     pairs = manifest.get("pairs")
     if not isinstance(pairs, list) or not pairs:
         return ["manifest must contain a non-empty pairs list"]

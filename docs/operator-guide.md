@@ -1,486 +1,165 @@
 # Development Supervisor operator guide
 
-This is normative English operator material for the implemented T01-T10 behavior and
-the practical bootstrap arrangement. It explains what is safe to run, what must remain
-pinned, and what requires a human decision. The architecture and approved ticket
-acceptance criteria remain the controlling design record. The maintained Russian
-operator translation is [operator-guide.ru.md](operator-guide.ru.md); English is the
-sole complete normative documentation set. See [documentation governance](documentation-governance.md)
-for pairing, freshness, and legacy-evidence rules.
+This is the normative English guide for an operator. It explains normal operation
+without requiring architecture documents. The reviewed Russian counterpart is
+[operator-guide.ru.md](operator-guide.ru.md). English controls if the two texts differ.
+The translation check is a freshness alarm, not a claim of semantic equivalence; see
+[documentation governance](documentation-governance.md).
 
-## Current controller topology
+## Install and orient yourself
 
-| Purpose | Path | Revision / state |
-|---|---|---|
-| Pinned legacy controller that develops Supervisor 2.0 | `/home/dev/Documents/dev-supervisor-old` | Supervisor 1.x AS-IS |
-| Supervisor 2.0 development repository | `/home/dev/Documents/dev-supervisor` | `main`; managed by the legacy controller |
-| Immutable engine used by live personal-assistant | `/home/dev/Documents/dev-supervisor-runtime-1x` | detached commit `41f6757` |
-| Live managed product | `/home/dev/Documents/personal-assistant` | T30 `HUMAN_GATE` |
+You need Python 3 and Git. A model invocation also needs the configured Codex CLI and
+an explicit quota authorization. Linux is qualified. No real Mac was tested for this
+release, so macOS is unsupported.
 
-The two controller relationships are separate:
-
-```text
-dev-supervisor-old -> develops dev-supervisor
-dev-supervisor-runtime-1x -> controls personal-assistant
-```
-
-The development checkout is not executable authority for live `personal-assistant`.
-This prevents a development commit from hot-changing the engine in the middle of a
-product run.
-
-## Safe read-only checks
-
-Check the Supervisor 2.0 development project:
+From the engine checkout, initialize a repository:
 
 ```bash
-cd /home/dev/Documents/dev-supervisor
+./supervisor init /path/to/project
+cd /path/to/project
 ./dev status
 ```
 
-Expected before T00 starts:
+To use a reviewed existing policy, run `./supervisor init /path/to/project --policy
+/path/to/policy.json`. Initialization creates an executable `dev` launcher, a tracked
+`dev-supervisor.json` policy, an ignored `.dev-supervisor/` runtime directory, and—only
+for the default setup—the minimum plan and ticket scaffold. It refuses to overwrite
+conflicting control files. Review and commit generated tracked files before running.
 
-- state `READY`;
-- current ticket `T00`;
-- clean working tree;
-- unknown quota until a fresh observation is supplied.
+If the engine checkout moves, set `DEV_SUPERVISOR_HOME` to its new location for the
+local launcher binding. Do not edit ignored runtime files to repair a binding.
 
-Check live personal-assistant:
+## Mental model
+
+There are four boundaries:
+
+1. The engine checkout contains the controller, prompts, schemas, tests, and guides.
+2. The controlled repository contains product files, policy, plans, tickets, and the
+   launcher.
+3. The ignored `.dev-supervisor/` directory contains local state, locks, quota
+   observations, and run evidence.
+4. A configured remote is only a persistence target; it is not a lock or authority.
+
+One managed repository has one writer and one active immutable engine generation.
+`status` is read-only. Treat an unexpected branch, HEAD, ticket, engine identity,
+working-tree fingerprint, policy version, or gate as a stop condition.
+
+The normal lifecycle moves from review and approved planning to `READY`, ticket work,
+verification, a local commit, and a bounded stop. Completing a plan does not select or
+start more work. Unknown state, quota, ownership, platform, compatibility, or protocol
+never grants permission.
+
+## Ordinary operation
+
+Before a model call, inspect the state and supply a current, trusted observation:
 
 ```bash
-cd /home/dev/Documents/personal-assistant
 ./dev status
-```
-
-Expected until the owner finishes T30 evidence:
-
-- state `HUMAN_GATE`;
-- current ticket `T30`;
-- the preserved nine-file dirty checkpoint;
-- engine root `/home/dev/Documents/dev-supervisor-runtime-1x`.
-
-`status` is read-only. An unexpected state, HEAD, engine path, or file list closes the
-gate: stop and investigate before running `resume`, setting quota, or editing files.
-
-## Quota authorization
-
-Only copy values from a current trusted interactive Codex `/status` observation:
-
-```bash
-./dev quota set --five-hour <percent> --weekly <percent>
-```
-
-The weekly value may be omitted only when it is genuinely unavailable and policy
-allows that observation shape. Never guess percentages or reset times. A model call
-consumes its authorization; diagnostic, recovery, and repair roles can require another
-fresh observation.
-
-Setting quota does not approve architecture, release a human gate, authorize push, or
-permit self-repair.
-
-## Supervisor 2.0 operating contract through T10
-
-Configuration is versioned and validated before a model, Git mutation, or remote
-operation. The independent `self_modification`, `user_requested_modification`, and
-`repository_push` capabilities are disabled by default and fail closed. A repository
-policy can further restrict a host/operator grant, but repository content and prompts
-cannot enable a capability. Effective configuration exposes provenance while redacting
-secrets. Unknown keys, unsupported versions, invalid ranges, contradictory values, or
-missing grants stop the operation.
-
-The durable lifecycle is assessment, requirements review, architecture review, plan
-ready, ticket execution, plan completed, backlog review, then an approved new plan
-epoch. Approvals name exact document versions. Completion of a final ticket is
-reconciled idempotently into `PLAN_COMPLETED`; it never starts a model or chooses more
-work. A backlog item becomes executable only after bounded selection, requirements and
-dependency analysis, architecture-impact review, human approval, and a new immutable
-plan epoch. State, approvals, epochs, engine identity, and audit events are versioned;
-unknown, unsupported, ambiguous, or newer forms stop without an implicit rewrite.
-
-Existing-project admission is read-only to product code. A project without an
-architecture receives an external-architecture requirement and admission checklist;
-foreign-format documents receive compatibility findings and a mapping/gap manifest.
-Supervisor is not adapted to fit the project, and no compatible plan/index is created
-until the source baseline is reviewed and approved.
-
-For an explicitly requested bounded improvement, preserve the trigger, perform an
-architecture-impact review, obtain approval, use a bounded plan/ticket, verify, and
-escalate to the ordinary cycle if bounds fail. Self-development follows that same
-workflow but produces a successor in an isolated checkout. The generation currently
-controlling a run stays immutable. Activation is a separate, quiescent, human-approved
-handoff with rollback; two controller generations never control the same project.
-
-Quota is based only on trusted current observations: high observations can authorize a
-bounded number of calls within their TTL, medium observations require a fresh snapshot
-per call, and low or unknown observations block. Every invocation has an audit record.
-There is no quota/reset/capacity forecast and no `forecast.fallback_ticket_hours`
-configuration or migration.
-
-For a generic unchanged `VERIFICATION_FAILED` checkpoint, do not rerun the failed
-check. An explicit audited same-ticket recovery first validates the exact model
-checkpoint, exactly one currently configured failed check, and its durable log. This
-validation alone invokes no model and consumes no quota. The repair then passes the
-full verification suite and ordinary scope and commit gates. Missing, altered, stale,
-or ambiguous evidence fails closed; mandatory host verification follows its stricter
-handling.
-
-For the historical protected-scope snapshot count defect only, use
-`./dev recover-protected-snapshot`. It can reprocess a completed, read-only
-protected-scope architecture PASS only when the durable checkpoint proves that a
-configured supervisor-control path caused the old product-snapshot count mismatch.
-It verifies the exact ticket, implementation and review runs, HEAD, branch, dirty
-path set and bytes, structured report, run artifacts, quota audit, product snapshot,
-and complete Git fingerprint. It invokes no model and consumes no quota, then returns
-the original review to the ordinary scope and commit gates. Any missing, ambiguous,
-stale, changed, or non-qualifying evidence fails closed without changing the
-preserved checkpoint. This command is not a general override or evidence waiver.
-Likewise, `resume` leaves unrelated `SCOPE_BLOCKED` checkpoints unchanged so their
-original reason and evidence remain available for operator reconciliation.
-
-An engine update uses a separately staged immutable identity with compatible
-configuration/state/protocol ranges. Verify, dry-run migration, and test it away from
-the active controller; archive and switch only at quiescence; then reconcile
-read-only. A stale host or incompatible state makes no write. Rollback stops the new
-generation before restoring the archived predecessor.
-
-## Qualified 1.x cutover and rollback
-
-The complete T12 preflight, evidence lineage, isolated rehearsal, abort, recovery,
-and final-human-gate package is the normative
-[personal-assistant qualification and cutover runbook](personal-assistant-qualification.md).
-Follow it with a second operator; it is not permission to alter the live T30 gate.
-
-The legacy conversion is opt-in. Until its binding switch, the pinned AS-IS engine
-continues unchanged; `status` and `resume` do not implicitly convert it. Rehearse the
-following only on an isolated copy before the T12/final-human gate. It accepts exactly
-a version-4 `HUMAN_GATE` with no active run or pending commit, a gate ticket matching
-the state, and a gate HEAD/fingerprint matching the product. A dirty tree is supported
-only when that preserved gate fingerprint matches. Unknown versions, missing/ambiguous
-gate ownership, active model/check/commit control, or a dirty mismatch are rejected
-without writes.
-
-The source engine must be clean at its exact revision. The sole documented exception
-is the pinned AS-IS `.self-repair-disabled` untracked guard: its checksum is retained
-in the predecessor receipt and it must not be removed to make cutover proceed.
-
-1. Create a separate clean immutable 2.0 engine checkout and verify the isolated
-   product is at the intended gate.
-2. Run `./dev legacy-cutover dry-run --candidate <2.0-engine>`. Preserve the returned
-   `source_checksum`; it is the exact reviewed source receipt.
-3. The operator holding the configured host lease makes the human decision. Abort is
-   simply no apply: retain the dry-run output and leave the legacy binding untouched.
-4. For go, run `./dev legacy-cutover apply --candidate <2.0-engine> --source-checksum
-   <receipt> --go`, then run only read-only `./dev status` and record go/no-go.
-
-The apply archive is retained under `.dev-supervisor/legacy-cutover-archives/`. It
-contains checksummed exact engine receipt/revision, binding, policy, state, quota
-ledger, run artifacts, Git HEAD/branch/fingerprint/product snapshot, and observed lock
-authority. The quota conversion invalidates every legacy authorization: a consumed
-authorization is never reusable after cutover. The archive is never deleted by this
-workflow.
-
-For a recorded no-go, first stop the new controller and reach a quiescent checkpoint,
-then the lease holder runs `./dev legacy-cutover rollback`. It restores the archived
-legacy binding, policy, state, and quota ledger, preserves product HEAD/working tree,
-and leaves exactly the restored legacy lock authority. Do not manually edit an archive,
-binding, state, quota ledger, or lock to force either direction.
-
-## Developing Supervisor 2.0
-
-Do not start T00 until the requirements index, architecture, plan, and ticket set have
-human approval.
-
-After approval and a fresh quota observation:
-
-```bash
-cd /home/dev/Documents/dev-supervisor
 ./dev quota set --five-hour <percent> --weekly <percent>
 ./dev run
 ```
 
-T00 creates the redacted `personal-assistant` compatibility fixture and no-model
-harness. Every implementation ticket through T11 in authoritative plan order must
-then pass that harness as part of the normal test suite. Intermediate revisions are
-tested only on isolated copies; they are never bound to live `personal-assistant`.
+Use `./dev resume` only after reading the status and any displayed gate or recovery
+instruction. A quota observation authorizes only the bounded invocation allowed by
+policy; it does not approve architecture, release a human gate, enable a capability,
+or authorize a push. Never guess percentages or reset times. If an automatic
+observation is unavailable or ambiguous, it is not permission: use the explicit manual
+command above with a current trusted value, or stop.
 
-Before every run:
-
-1. inspect `./dev status`;
-2. confirm the working tree is clean or exactly matches a recorded recovery checkpoint;
-3. confirm the current ticket and expected role;
-4. read the current ticket and any displayed gate;
-5. supply fresh quota only when ready for that exact invocation.
-
-Do not run T99. The milestone after T12 is the final human cutover gate and must not be
-released under Supervisor 1.x.
-
-After the qualified 2.0 generation has been activated and its read-only status has
-been accepted, close the migrated non-executable sentinel exactly once with
-`./dev gate accept-cutover --note "..."`. This command verifies the applied cutover,
-predecessor archive, engine binding, final ticket prefix, and product lineage. The
-accepted HEAD must be either the gate HEAD or the exact revision of an activated,
-qualified immutable bootstrap successor descended from it. The command invokes no
-model and creates no commit. Acceptance closes direct legacy rollback;
-the checksummed predecessor archive remains preserved for explicit recovery, and new
-development still requires a separately approved plan epoch.
-
-## Periodic checkpoints between tickets
-
-Supervisor can stop between completed tickets when a configured periodic threshold is
-reached, for example:
-
-```text
-State: PERIODIC_CHECKPOINT
-Ticket: T02
-2 completed tickets reached the limit of 2
-resume_command: null
-```
-
-This is a successful bounded stop, not a failed ticket and not a quota checkpoint. The
-previous ticket has already passed verification/scope and has been committed; the next
-ticket has not started. `safe_to_power_off: true` means no model or verification
-process remains active.
-
-`resume_command: null` is decisive: an ordinary `./dev resume` must not cross this
-human gate. It will return the same `PERIODIC_CHECKPOINT` state. Likewise,
-`./dev quota set ...` only records a quota observation; it does not approve or release
-the checkpoint.
-
-Review before release:
+After a run, inspect:
 
 ```bash
-cd /home/dev/Documents/dev-supervisor
 ./dev status
 git status --short --branch
 git log --oneline --decorate -5
 ```
 
-Confirm that:
+The Supervisor normally creates the verified implementation commit. Do not pre-commit,
+amend, rebase, squash, reset, clean, or stash a recorded checkpoint. Stage exact paths
+only for a documented, quiescent human-authored action.
 
-- the working tree is clean;
-- the reported HEAD equals the last successful ticket commit;
-- the expected tickets are completed and the next ticket is correct;
-- verification and compatibility tests passed;
-- no plan, architecture, scope, or operator decision needs correction.
+## Gates and safe stops
 
-When no plan change is needed, release the gate with a meaningful review note:
+`HUMAN_GATE` and `PERIODIC_CHECKPOINT` are successful bounded stops. They do not mean
+that `resume` is allowed. If status displays `resume_command: null`, ordinary resume
+must leave the gate closed. Inspect the required evidence, plan, tree, completed
+tickets, and test results; release only with the documented gate command and a
+meaningful note.
 
-```bash
-./dev gate release --note "Reviewed T00-T01: commits and verification passed; tree clean; T02 may start"
-```
-
-Then ensure quota is still fresh. If status reports `Quota: OK` and the observation has
-not expired, the observation recorded while the gate was closed remains available. If
-it is missing, stale, or no longer trusted, record a new observation:
+Stop safely at any time:
 
 ```bash
-./dev quota set --five-hour <percent> --weekly <percent>
-```
-
-Finally continue the newly released `READY` state:
-
-```bash
-./dev resume
-```
-
-If review discovers a legitimate plan or architecture change, do not use an ordinary
-release note to bypass it. Keep the checkpoint closed and use the documented plan
-reconciliation/architecture-adoption workflow. If HEAD or the working-tree fingerprint
-changed after the checkpoint, gate release must fail closed; investigate rather than
-resetting or cleaning the tree.
-
-## Completing personal-assistant T30
-
-T30 requires an owner-authenticated live PASS/FAIL test. Automated checks cannot
-substitute for that evidence.
-
-Safe sequence:
-
-1. Keep `personal-assistant` at the T30 `HUMAN_GATE` while preparing the real test.
-2. Perform the documented browser/account/network/restart/source/link checks.
-3. Record the dated, redacted result in the existing T30 evidence file.
-4. Confirm `./dev status` still reports the expected checkpoint.
-5. Release the gate only when the recorded evidence is complete:
-
-```bash
-cd /home/dev/Documents/personal-assistant
-./dev gate release --note "T30 owner evidence recorded: PASS/FAIL, date, concise basis"
-./dev resume
-```
-
-Do not release the gate merely because the prepared code or synthetic checks pass. Do
-not clean, reset, stash, or manually commit the preserved T30 files outside the
-documented gate workflow.
-
-## Self-repair behavior for live personal-assistant
-
-Supervisor 1.x has no real configuration switch for disabling bounded self-repair.
-The pinned runtime therefore contains this deliberate untracked guard:
-
-```text
-/home/dev/Documents/dev-supervisor-runtime-1x/.self-repair-disabled
-```
-
-Do not remove it.
-
-If diagnostics classify a failure as `SUPERVISOR_BUG`:
-
-1. the workflow reaches `SUPERVISOR_REPAIR_PENDING`;
-2. a separate fresh quota observation is required before a repair model could run;
-3. the runtime repository cleanliness check sees the guard file;
-4. no repair model starts and no repair quota authorization is consumed;
-5. state becomes `SUPERVISOR_REPAIR_FAILED`;
-6. product work remains preserved, and no Supervisor code, product commit, or remote
-   ref is changed.
-
-`./dev resume` does not bypass `SUPERVISOR_REPAIR_FAILED`. The safe response is:
-
-1. stop automation and preserve the product checkpoint;
-2. inspect diagnostic state and run artifacts;
-3. reproduce the defect in `/home/dev/Documents/dev-supervisor`;
-4. implement it through an approved Supervisor ticket;
-5. pass the full suite and personal-assistant compatibility harness;
-6. create a new immutable engine checkout;
-7. switch the live binding only through a reviewed quiescent cutover with rollback.
-
-Never "fix" this state by deleting `.self-repair-disabled` or pointing the live project
-at the mutable development checkout.
-
-## Commit ownership and timing
-
-The default rule is: the Supervisor owns implementation commits. After a ticket model
-passes verification and scope checks, the Supervisor creates the ticket commit and
-records that exact commit in runtime state. Do not pre-commit, amend, squash, rebase, or
-replace that work manually.
-
-### When a manual commit is allowed
-
-A manual operator commit is allowed only in one of these situations:
-
-1. The project is quiescent in `READY`, with `active_run: null`, `pending_commit: null`,
-   no gate, and a clean working tree before the edit. The change must be an explicitly
-   reviewed operator/control/documentation change outside an implementation ticket.
-2. A documented human or architecture gate explicitly requires a human-authored commit
-   and provides the matching adoption/reconciliation command.
-3. A reviewed migration/bootstrap procedure explicitly calls for a local commit before
-   the first managed run.
-
-For a small operator-documentation change between tickets, use this sequence:
-
-```bash
-./dev status
-git status --short --branch
-# edit only the reviewed file
-git diff --check
-git diff -- docs/operator-guide.md
-git add docs/operator-guide.md
-git commit -m "Document periodic checkpoint operation"
+./dev stop
 ./dev status
 ```
 
-The pre-commit status must show `READY`; the post-commit status must still show the
-same current ticket, a clean tree, and no unexpected gate/run. Stage exact paths rather
-than using broad `git add .` in a repository with preserved or unrelated work.
+Do not power off while a model, verification, scope, or commit operation is active.
+When status reports a quiescent checkpoint or an already-quiescent stop, no such process
+remains. Preserve the status output and runtime evidence when stopping because of an
+unexpected condition.
 
-### When a manual commit is forbidden
+Common signals and the safe response:
 
-Do not manually commit, amend, rebase, stash, reset, or clean when:
+| Signal | Meaning | Safe response |
+|---|---|---|
+| `READY` | A reviewed next action may be available. | Recheck ticket, tree, and quota before `run` or `resume`. |
+| `HUMAN_GATE` / `PERIODIC_CHECKPOINT` | Human review is required. | Do not bypass it; follow its documented release procedure. |
+| quota blocked or unknown | No authorization exists. | Supply a fresh trusted manual observation or stop. |
+| `VERIFICATION_FAILED` | A deterministic check failed. | Preserve its log; use only the explicit same-ticket recovery route when offered. |
+| `SCOPE_BLOCKED`, `GIT_BLOCKED`, or ownership conflict | Guard prevented an unsafe action. | Do not edit state or force Git; investigate and reconcile through the named process. |
+| `SUPERVISOR_REPAIR_FAILED` | A controller repair was not authorized or did not complete safely. | Preserve evidence and use a separately approved controller change. |
 
-- a model, verification command, scope check, or Supervisor commit is active;
-- state is `IMPLEMENTING`, `VERIFYING`, `SCOPE_PENDING`, `COMMITTING`,
-  `RECOVER_MODEL`, or another non-quiescent phase;
-- a `PERIODIC_CHECKPOINT` or `HUMAN_GATE` is still closed, unless that exact gate
-  explicitly requires a human-authored commit;
-- the working tree is a recorded recovery, evidence, interrupted, or diagnostic
-  checkpoint;
-- `active_run` or `pending_commit` is present;
-- files belong to live T30 evidence or another preserved product checkpoint;
-- the proposed commit changes architecture/plan/scope without the corresponding human
-  approval and reconciliation workflow.
+## Recovery and advanced contracts
 
-In particular, do not commit documentation while a periodic checkpoint is closed.
-Release and verify the gate first; then make the documentation commit from `READY`
-before starting the next ticket.
+Recovery is evidence-driven. Do not delete locks, quota records, run artifacts,
+bindings, archives, or state to make a command proceed. For an unchanged generic
+`VERIFICATION_FAILED` checkpoint, only the explicit audited same-ticket recovery may
+validate the exact checkpoint, one currently configured failed check, and its durable
+log. That validation invokes no model and consumes no quota; any subsequent repair must
+pass the full verification, scope, and commit gates.
 
-### Commit contents that are never allowed
+`./dev recover-protected-snapshot` is a narrow historical recovery command, not a
+general override. Use it only when its own status conditions prove the protected-control
+snapshot defect; it checks the exact ticket, runs, HEAD, branch, dirty bytes, reports,
+artifacts, quota audit, product snapshot, and complete Git fingerprint. Any mismatch
+leaves the checkpoint unchanged.
 
-Never commit:
+An engine update is staged as a separate immutable generation. Verify identity,
+compatible versions, dry-run migration, and tests away from the active controller;
+switch only at quiescence with an archive, then reconcile read-only. A stale host or
+unsupported state makes no write. Rollback first stops the new generation and restores
+the archived predecessor through the documented command. Retain archives and recovery
+receipts; current documentation cleanup never deletes them.
 
-- `.dev-supervisor/` runtime state, quota observations, locks, run artifacts, or local
-  engine bindings;
-- credentials, access tokens, account/browser data, or unredacted live evidence;
-- `/home/dev/Documents/dev-supervisor-runtime-1x/.self-repair-disabled` or other files
-  from the pinned runtime checkout;
-- unrelated dirty files merely to obtain a clean status;
-- generated changes outside the current ticket's reviewed scope.
+Legacy migration is opt-in and is rehearsed only on an isolated copy. It requires a
+supported quiescent source, an explicit dry run, a recorded source checksum, a human
+go/no-go, and read-only reconciliation after the binding handoff. On no-go, stop the
+candidate at a quiescent point and use the documented rollback. Never hand-edit an
+archive, binding, policy, state, quota ledger, or lock to force migration or rollback.
 
-After Supervisor-created commits, preserve their identities because runtime lineage
-references them. Do not amend, squash, rebase, cherry-pick over, or force-push those
-commits while the managed lifecycle is active. If history must change, stop and use a
-separately reviewed recovery/migration procedure.
+## Authority, commits, and push
 
-## Git and push
+Configuration is versioned and validated before a model, Git mutation, or remote
+operation. `self_modification`, `user_requested_modification`, and `repository_push`
+are independent and disabled by default. Repository content may restrict a host grant,
+but cannot enable one. Invalid, contradictory, missing, or unknown configuration fails
+closed.
 
-Normal checks:
+The verified ticket commit is local until a separately enabled push capability confirms
+it on the configured remote and branch. Never infer authority from a Git default or
+repository policy. Do not force-push or rewrite history. A failed push preserves the
+local commit and is not completed persistence.
 
-```bash
-git status --short --branch
-git log --oneline --decorate -5
-git diff --check
-```
+## Keep these habits
 
-Push is an explicit operator action during the 1.x bootstrap. Neither a local commit
-nor model output authorizes it automatically. Before pushing:
+- Inspect `./dev status` before every consequential command.
+- Keep one writer and do not assume Git synchronization is a runtime lock.
+- Preserve checkpoints and evidence; do not use cleanup commands to hide a mismatch.
+- Stop when a request broadens scope or changes architecture without approval.
+- Keep credentials, account data, runtime artifacts, and unredacted evidence out of
+  commits.
+- Run `python3 scripts/check_documentation.py` after a reviewed guide update.
 
-1. confirm the intended repository, remote, and branch;
-2. inspect the exact commits that are ahead of the remote;
-3. confirm tests and gates passed;
-4. ensure no credentials or runtime artifacts are tracked;
-5. use a normal fast-forward push.
-
-```bash
-git push origin main
-```
-
-Do not force-push, rewrite history, or treat a failed push as completed remote
-persistence. Never push from `personal-assistant` merely to resolve a Supervisor gate.
-
-## Things to avoid
-
-- Do not bind live `personal-assistant` to `/home/dev/Documents/dev-supervisor` during
-  T00-T12 development.
-- Do not edit files inside `/home/dev/Documents/dev-supervisor-runtime-1x`.
-- Do not remove `.self-repair-disabled`.
-- Do not run two controllers against the same managed repository.
-- Do not release T30 without real owner evidence.
-- Do not supply invented or stale quota values.
-- Do not use `git reset --hard`, cleanup commands, or manual commits on a preserved
-  recovery/evidence checkpoint.
-- Do not run T99 or release the post-T12 gate under Supervisor 1.x.
-- Do not migrate live state directly; rehearse on an isolated copy first.
-- Do not assume Git synchronization provides a runtime lock or engine compatibility.
-
-## Stop conditions
-
-Stop without guessing when any of the following occurs:
-
-- engine root, branch, HEAD, current ticket, or gate differs from the expected value;
-- state, policy, or compatibility version is unknown;
-- the working tree differs from the recorded checkpoint;
-- a model asks to broaden scope or change architecture without approval;
-- `SUPERVISOR_REPAIR_FAILED`, `GIT_BLOCKED`, `SCOPE_BLOCKED`, or an unsupported
-  migration state is reported;
-- the same managed repository may be writable from another host/controller;
-- a push would be non-fast-forward or require bypassing branch protection.
-
-Preserve state and artifacts, record the exact status output, and resolve the condition
-through the appropriate architecture, product, or operator gate.
-
-## Key references
-
-- [Requirements index](architecture/requirements-index.md)
-- [Proposed architecture](architecture/architecture.md)
-- [Implementation plan](architecture/implementation-plan.md)
-- [Migration analysis](architecture/migration-analysis.md)
-- [T00 compatibility isolation](architecture/tickets/00-isolate-runtime-and-compatibility-harness.md)
-- [Russian AS-IS quickstart](quickstart.ru.md)
-- [Russian AS-IS limitations](limitations.ru.md)
+For policy and implementation details, use the reviewed documents named by the active
+plan and ticket. Historical 1.x and completed 2.0 material is retained in Git history,
+not as a current operator instruction.

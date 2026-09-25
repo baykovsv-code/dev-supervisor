@@ -1,165 +1,164 @@
 # Руководство оператора Development Supervisor
 
-Это поддерживаемый русский операторский перевод [нормативного английского
-руководства](operator-guide.md). Полный нормативный комплект документации Supervisor
-2.0 — английский; при различии текстов применяется английский документ. Перевод
-проверяется на объявленную пару и свежесть, но не на семантическую эквивалентность.
+Это поддерживаемое русское руководство для оператора. Нормативным источником остаётся
+[английское руководство](operator-guide.md): если тексты различаются, действует
+английский. Проверка перевода следит за парой, ссылками и свежестью исходника, но не
+утверждает смысловую эквивалентность; правила описаны в
+[документации по управлению документацией](documentation-governance.md).
 
-## Назначение и границы
+## Установка и первое знакомство
 
-Supervisor управляет одним репозиторием одним контроллером. Engine, managed project,
-host-local runtime и canonical remote — разные границы. Git не является distributed
-lock. До T12 live `personal-assistant` использует отдельный immutable AS-IS engine;
-разрабатываемый checkout не получает над ним власть.
+Нужны Python 3 и Git. Для запуска модели также требуются настроенный Codex CLI и
+явное разрешение по квоте. Linux — квалифицированная платформа. На реальном Mac этот
+релиз не проверялся, поэтому macOS не поддерживается.
 
-## Основной порядок работы
+Из checkout движка инициализируйте управляемый репозиторий:
 
-Проверяйте `./dev status` до действий. Жизненный цикл: review требований и
-архитектуры, `PLAN_READY`, выполнение тикета, `PLAN_COMPLETED`, review backlog и новый
-утверждённый plan epoch. Завершённый план не запускает модель и не выбирает новую
-работу сам. Backlog становится тикетом только после ограниченного выбора, анализа
-зависимостей и архитектурного воздействия, human approval и нового immutable epoch.
+```bash
+./supervisor init /path/to/project
+cd /path/to/project
+./dev status
+```
 
-State, approvals, epochs, engine identity и audit events versioned. Неизвестная,
-более новая, неоднозначная или невалидная версия останавливается без записи. Dry-run
-миграции не меняет состояние; apply, rejection и rollback требуют документированного
-workflow.
+Если уже есть проверенная политика, укажите её явно: `./supervisor init
+/path/to/project --policy /path/to/policy.json`. Инициализация создаёт исполняемый
+launcher `dev`, отслеживаемый файл `dev-supervisor.json`, игнорируемый каталог runtime
+`.dev-supervisor/` и, только для стандартной настройки, минимальный план с заготовкой
+тикета. Существующие конфликтующие управляющие файлы не перезаписываются. Перед первым
+запуском проверьте и закоммитьте созданные отслеживаемые файлы.
 
-## Конфигурация и безопасность
+Если checkout движка перемещён, для локальной привязки launcher задайте
+`DEV_SUPERVISOR_HOME`. Не исправляйте привязку ручным редактированием runtime-файлов.
 
-Конфигурация versioned и preflight-validated. `self_modification`,
-`user_requested_modification` и `repository_push` независимы, default-off и
-fail-closed. Repository policy может только ограничить host grant, но не включить его.
-Неизвестные keys, противоречия, invalid ranges, отсутствующие grants и secrets в
-конфигурации запрещают действие до модели или remote mutation. Status/audit показывает
-effective redacted configuration и provenance.
+## Ментальная модель
 
-Одна модель не утверждает architecture, не выдаёт capability и не расширяет scope.
-Self-development создаёт и проверяет successor в isolated checkout; executing
-generation не изменяется. Activation — отдельный quiescent human-approved cutover с
-rollback, без двух контроллеров одного проекта.
+Есть четыре границы:
 
-## Команды, quota и gates
+1. Checkout движка содержит контроллер, prompts, schemas, тесты и руководства.
+2. Управляемый репозиторий содержит продукт, политику, планы, тикеты и launcher.
+3. В игнорируемом `.dev-supervisor/` лежат локальные state, locks, наблюдения квоты и
+   доказательства запуска.
+4. Настроенный remote — лишь цель сохранения; он не является ни lock, ни источником
+   полномочий.
 
-Используйте `./dev status` для read-only проверки и `./dev quota set --five-hour
-<percent> --weekly <percent>` только с текущим trusted observation. High observation
-может разрешить ограниченные calls в TTL, medium требует fresh snapshot для каждого
-call, low/unknown блокирует. Нет forecast quota, reset time или capacity; каждый call
-имеет audit authorization.
+У одного управляемого репозитория один writer и одно активное неизменяемое поколение
+движка. `status` ничего не меняет. Неожиданные branch, HEAD, ticket, identity движка,
+fingerprint рабочего дерева, версия политики или gate означают: остановитесь.
 
-`HUMAN_GATE` и periodic checkpoint не обходятся `resume` или quota set. До release
-проверьте HEAD, tree, ticket, evidence и точный gate. Не редактируйте вручную state,
-checkpoint или artifacts; сохраняйте evidence и используйте соответствующий human,
-architecture или recovery workflow.
+Обычный lifecycle идёт от review и утверждённого планирования к `READY`, работе над
+тикетом, verification, локальному commit и ограниченной остановке. Завершение плана не
+выбирает и не запускает новую работу. Неизвестные state, quota, ownership, platform,
+compatibility или protocol никогда не дают разрешения.
 
-## Commit и push
+## Обычная работа
 
-После verification и scope validation Supervisor создаёт local commit и сохраняет его
-identity. Не amend/rebase/squash/force-push этот lineage. Пока push disabled, результат
-— `LOCALLY_COMMITTED`, не remote persistence. При enabled push host-owned remote name,
-credential-free URL identity и target branch должны совпасть с checked-out и
-repository-restricted branch. Пушится только verified commit; completion наступает
-только после подтверждения его reachability на remote. Ошибки сети, credentials,
-authorization, protection или non-fast-forward сохраняют local commit и дают
-actionable status. Retry и interrupted confirmation idempotent; force-push запрещён.
+Перед вызовом модели проверьте state и внесите текущее доверенное наблюдение:
 
-## Recovery и ограничения
+```bash
+./dev status
+./dev quota set --five-hour <percent> --weekly <percent>
+./dev run
+```
 
-Recovery сверяет durable checkpoint, artifacts, HEAD, fingerprint и state; он не
-повторяет без изменений модель или failed deterministic check. Для generic
-`VERIFICATION_FAILED` допустимо только явное audited same-ticket recovery: точная
-model checkpoint, ровно один текущий failed check и durable log должны совпасть. Оно
-не расходует quota и не вызывает модель; repair затем проходит полный suite, scope и
-commit gates. Host-verification handling строже. Missing, stale или altered evidence
-останавливает процесс.
+`./dev resume` используйте только после чтения status, gate и показанной инструкции по
+recovery. Наблюдение квоты разрешает лишь ограниченный policy вызов: оно не утверждает
+архитектуру, не открывает human gate, не включает capability и не разрешает push. Не
+угадывайте проценты и время сброса. Если автоматическое наблюдение недоступно или
+неоднозначно, оно не даёт разрешения: внесите текущее доверенное значение явной
+командой выше либо остановитесь.
 
-Только для исторического дефекта count в protected-scope snapshot используйте
-`./dev recover-protected-snapshot`. Команда может повторно обработать завершённый
-read-only architecture PASS, лишь когда durable checkpoint доказывает, что
-настроенный supervisor-control path вызвал старое несовпадение count product snapshot.
-Она сверяет точные ticket, implementation и review run, HEAD, branch, набор и bytes
-dirty paths, structured report, run artifacts, quota audit, product snapshot и полный
-Git fingerprint. Она не вызывает model и не расходует quota, после чего возвращает
-исходный review к обычным scope и commit gates. Missing, ambiguous, stale, changed
-или не подходящее evidence fail closed без изменения preserved checkpoint. Это не
-general override и не waiver evidence.
-Также `resume` не изменяет не связанные с protected-scope checkpoints
-`SCOPE_BLOCKED`, чтобы их исходные reason и evidence сохранялись для operator
-reconciliation.
+После запуска проверьте:
 
-Engine update загружает successor отдельно, проверяет immutable identity и compatible
-state/config/protocol, выполняет dry-run и tests, затем переключается только в
-quiescent checkpoint после archive и read-only reconciliation. Rollback сначала
-останавливает new generation. Unknown compatibility, second writer, dirty unsupported
-migration state или невозможность сохранить guard — stop, preserve evidence, request
-human decision.
+```bash
+./dev status
+git status --short --branch
+git log --oneline --decorate -5
+```
 
-## Qualified cutover 1.x и rollback
+Обычно проверенный implementation commit создаёт Supervisor. Не делайте заранее
+commit, amend, rebase, squash, reset, clean или stash для сохранённого checkpoint.
+Точные пути можно staging только для документированного действия человека в
+quiescent-состоянии.
 
-Полный нормативный английский [T12 runbook qualification и cutover](personal-assistant-qualification.md)
-задаёт preflight, evidence lineage, rehearsal на isolated copy, abort, recovery и
-final human gate. Второй operator должен независимо сверить evidence. Этот workflow
-не разрешает менять live T30 gate; при различии текстов действует английский runbook.
+## Gates и безопасная остановка
 
-Перед T12 оба operator подтверждают redacted checksummed fixture, все PASS reports
-T00–T11/F09/F10/F11, отдельные clean immutable source/candidate engine checkouts,
-единственный host writer lease и exact v4 `HUMAN_GATE` source. Выполните
-`python3 scripts/check_documentation.py`: manifest должен быть fresh, а результат
-проверяет только declared pair, links и freshness, не semantic equivalence. В пакет
-final gate входят fixture/checksums, dry-run/apply/rollback receipts, pre/post
-read-only status, product HEAD/fingerprint, test output, compatibility lineage и
-documentation-check output; [T99 sentinel](architecture/tickets/99-cutover-sentinel.md)
-не запускается под legacy controller.
+`HUMAN_GATE` и `PERIODIC_CHECKPOINT` — успешные ограниченные остановки. Они не
+означают, что `resume` разрешён. Если status показывает `resume_command: null`,
+обычный resume обязан оставить gate закрытым. Проверьте требуемые evidence, план,
+дерево, завершённые тикеты и тесты; открывайте gate только документированной командой
+и с содержательной заметкой.
 
-Abort при stale manifest, missing receipt, changed source checksum, product diff,
-duplicate invocation/commit, reused quota authorization или двух controller/lock.
-Не исправляйте вручную state, binding, archive, quota или lock. До apply сохраните
-dry-run evidence и оставьте legacy binding; после apply сначала остановите candidate
-в quiescent state, выполните documented rollback и проверьте восстановленные
-HEAD/fingerprint, v4 state, quota и единственный legacy lock.
+Остановиться безопасно можно так:
 
-Переход legacy → 2.0 выполняется только явно. До binding switch pinned AS-IS engine
-продолжает работу без изменения: `status` и `resume` не запускают implicit conversion.
-Сначала повторите процедуру только на isolated copy, до T12/final human gate. Допустим
-лишь state version 4 в `HUMAN_GATE`: нет active run/pending commit, ticket gate совпадает
-со state, а HEAD/fingerprint gate совпадают с product. Dirty tree допускается только с
-таким preserved fingerprint. Unknown version, missing/ambiguous gate ownership, active
-model/check/commit либо dirty mismatch отклоняются без записи.
+```bash
+./dev stop
+./dev status
+```
 
-Source engine должен быть clean на exact revision. Единственное документированное
-исключение — untracked guard pinned AS-IS `.self-repair-disabled`: его checksum
-сохраняется в predecessor receipt; не удаляйте guard ради выполнения cutover.
+Не выключайте систему, пока активны model, verification, scope или commit. Если status
+сообщает о quiescent checkpoint или уже quiescent stop, таких процессов нет. При
+неожиданном условии сохраните вывод status и runtime evidence.
 
-1. Подготовьте separate clean immutable checkout engine 2.0 и проверьте нужный gate.
-2. Выполните `./dev legacy-cutover dry-run --candidate <2.0-engine>` и сохраните
-   возвращённый `source_checksum` как reviewed receipt.
-3. Human с host lease принимает go/no-go. Abort означает не выполнять apply: сохранить
-   dry-run evidence и оставить legacy binding без изменения.
-4. Для go: `./dev legacy-cutover apply --candidate <2.0-engine> --source-checksum
-   <receipt> --go`; затем используйте только read-only `./dev status` и запишите решение.
+| Сигнал | Что означает | Безопасное действие |
+|---|---|---|
+| `READY` | Следующее проверенное действие может быть доступно. | Перед `run` или `resume` снова проверьте ticket, дерево и quota. |
+| `HUMAN_GATE` / `PERIODIC_CHECKPOINT` | Требуется review человека. | Не обходите gate; следуйте документированной процедуре открытия. |
+| quota blocked или unknown | Нет разрешения на вызов. | Внесите свежее доверенное ручное наблюдение либо остановитесь. |
+| `VERIFICATION_FAILED` | Детерминированная проверка не прошла. | Сохраните log; используйте только предложенный явный same-ticket recovery. |
+| `SCOPE_BLOCKED`, `GIT_BLOCKED` или конфликт ownership | Guard остановил небезопасное действие. | Не меняйте state и не форсируйте Git; разберите причину указанным процессом. |
+| `SUPERVISOR_REPAIR_FAILED` | Ремонт контроллера не был разрешён или безопасно завершён. | Сохраните evidence и используйте отдельно утверждённое изменение контроллера. |
 
-Если новое поколение 2.0 активировано, его read-only status проверен и результат
-принят, один раз выполните `./dev gate accept-cutover --note "..."`. Команда проверяет
-cutover record, predecessor archive, binding, полный префикс завершённых тикетов и
-product lineage. Принимаемый HEAD должен быть либо HEAD финального gate, либо точной
-revision уже активированного и квалифицированного immutable bootstrap successor,
-происходящего от gate HEAD. Команда не вызывает модель и не создаёт commit. После принятия
-прямой rollback в legacy 1.x закрывается, но checksummed archive сохраняется для
-явного восстановления; новая разработка всё равно требует отдельного утверждённого
-plan epoch.
+## Recovery и расширенные договорённости
 
-Archive `.dev-supervisor/legacy-cutover-archives/` сохраняется и содержит checksummed
-engine receipt/revision, binding, policy, state, quota ledger, run artifacts, Git
-HEAD/branch/fingerprint/product snapshot и observed lock authority. Конверсия quota
-invalidates every legacy authorization: consumed authorization никогда не используется
-повторно. Workflow не удаляет predecessor archive.
+Recovery опирается на evidence. Не удаляйте locks, записи quota, artifacts запусков,
+bindings, archives или state, чтобы заставить команду продолжить работу. Для
+неизменённого общего checkpoint `VERIFICATION_FAILED` только явный audited
+same-ticket recovery может сверить точный checkpoint, одну текущую неудачную проверку
+и её durable log. Эта сверка не вызывает модель и не расходует quota; последующий
+repair обязан пройти полный verification, scope и commit gates.
 
-При no-go сначала остановите new controller и достигните quiescent checkpoint, затем
-holder lease запускает `./dev legacy-cutover rollback`. Он восстанавливает archived
-legacy binding, policy, state и quota ledger, сохраняет product HEAD/working tree и
-оставляет только restored legacy lock authority. Не редактируйте вручную archive,
-binding, state, quota или lock для принудительного перехода/rollback.
+`./dev recover-protected-snapshot` — узкая команда для исторического дефекта, а не
+общий override. Используйте её лишь когда её условия в status доказывают дефект
+protected-control snapshot: команда сверяет ticket, runs, HEAD, branch, bytes dirty
+файлов, reports, artifacts, quota audit, product snapshot и полный Git fingerprint.
+Любое несовпадение оставляет checkpoint без изменений.
 
-Подробнее и точные текущие bootstrap commands — в [английском operator guide](operator-guide.md),
-[architecture](architecture/architecture.md) и соответствующем ticket. До final gate
-не выполняйте T99 и не переключайте live binding.
+Обновление движка готовится как отдельное неизменяемое поколение. Проверяйте identity,
+совместимые версии, dry-run migration и тесты вне активного контроллера; переключайте
+только в quiescence с archive, затем выполняйте read-only reconciliation. Stale host
+или неподдерживаемое state не делают записи. Rollback сначала останавливает новое
+поколение, затем документированной командой восстанавливает архивный predecessor.
+Храните archives и recovery receipts: очистка текущей документации их не удаляет.
+
+Переход legacy выполняется только по явному решению и сначала репетируется на
+изолированной копии. Нужны поддерживаемый quiescent source, явный dry run,
+зафиксированный source checksum, решение человека go/no-go и read-only reconciliation
+после handoff. При no-go остановите candidate в quiescent-точке и выполните
+документированный rollback. Никогда не редактируйте вручную archive, binding, policy,
+state, quota ledger или lock, чтобы принудить migration либо rollback.
+
+## Полномочия, commits и push
+
+Конфигурация имеет версии и проходит проверку до model, Git mutation или remote
+operation. `self_modification`, `user_requested_modification` и `repository_push`
+независимы и по умолчанию отключены. Содержимое репозитория может ограничить grant
+хоста, но не может включить его. Некорректная, противоречивая, отсутствующая или
+неизвестная конфигурация fail closed.
+
+Проверенный ticket commit остаётся локальным, пока отдельно включённая capability push
+не подтвердит его на настроенных remote и branch. Не выводите полномочие из Git default
+или repository policy. Не используйте force-push и не переписывайте history. Ошибка
+push сохраняет локальный commit и не означает завершённое persistence.
+
+## Полезные привычки
+
+- Перед каждой существенной командой читайте `./dev status`.
+- Сохраняйте одного writer и не считайте синхронизацию Git runtime lock.
+- Берегите checkpoints и evidence; не используйте cleanup для сокрытия несовпадения.
+- Остановитесь, если запрос расширяет scope или меняет архитектуру без утверждения.
+- Не включайте в commits credentials, account data, runtime artifacts и неотредактированные evidence.
+- После проверенного обновления руководств запускайте `python3 scripts/check_documentation.py`.
+
+За деталями policy и реализации обращайтесь к проверенным документам, указанным
+активными plan и ticket. Исторические материалы 1.x и завершённые материалы 2.0
+сохраняются в Git history и не являются текущей инструкцией оператора.
