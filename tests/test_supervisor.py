@@ -4668,6 +4668,12 @@ class BacklogCycleTests(unittest.TestCase):
         self.assertEqual(len(state["plan_epochs"]), 2)
         self.assertEqual(state["plan_epochs"][0]["completion"]["ticket"], "T01")
         self.assertEqual(self.supervisor.status()["current_frontier"]["remaining_tickets"], ["T31"])
+        self.assertEqual(self.supervisor._plan_tickets(), ["T31"])
+        ticket_path = self.supervisor._ticket_path("T31")
+        self.assertTrue(str(ticket_path).startswith(str(self.supervisor.runtime / "backlog-cycles")))
+        authoritative = self.supervisor._authoritative_list(ticket_path)
+        self.assertIn("backlog-cycles/", authoritative)
+        self.assertNotIn("docs/architecture/implementation-plan.md", authoritative)
 
     def test_backlog_source_change_fails_closed_and_cannot_advance_the_completed_epoch(self):
         selection = self._write("selection.json", {"version": 1, "items": [{"id": "B-1", "source": "BACKLOG.md", "summary": "bounded follow-up"}]})

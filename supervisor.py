@@ -4667,13 +4667,33 @@ class Supervisor:
             pattern = f"{ticket.lower()}-*.md"
         else:
             pattern = f"{int(raw):02d}-*.md"
-        matches = sorted((self.root / "docs" / "architecture" / "tickets").glob(pattern))
+        materialization = self._current_backlog_materialization()
+        directory = (
+            self._backlog_cycle_artifact(materialization["tickets"])
+            if materialization is not None
+            else self.root / "docs" / "architecture" / "tickets"
+        )
+        matches = sorted(directory.glob(pattern))
         if len(matches) != 1:
             raise SupervisorError(f"could not resolve one ticket document for {ticket}: {pattern}")
         return matches[0]
 
     def _authoritative_list(self, ticket_path: Path) -> str:
-        values = list(self.policy["authoritative_documents"]) + [str(ticket_path.relative_to(self.root))]
+        values = list(self.policy["authoritative_documents"])
+        materialization = self._current_backlog_materialization()
+        if materialization is not None:
+            replacements = {
+                self.policy["implementation_plan"]: str(
+                    self._backlog_cycle_artifact(materialization["plan"]).relative_to(self.root)
+                ),
+            }
+            values = [replacements.get(value, value) for value in values]
+            values = [
+                str(self._backlog_cycle_artifact(materialization["index"]).relative_to(self.root))
+                if value.endswith("requirements-index.md") else value
+                for value in values
+            ]
+        values.append(str(ticket_path.relative_to(self.root)))
         missing = [value for value in values if not (self.root / value).is_file()]
         if missing:
             raise SupervisorError("missing authoritative documents: " + ", ".join(missing))
@@ -7079,8 +7099,69 @@ class Supervisor:
         return True
 
     def _plan_tickets(self) -> list[str]:
+        materialization = self._current_backlog_materialization()
+        if materialization is not None:
+            plan_path = self._backlog_cycle_artifact(materialization["plan"])
+            plan_bytes = plan_path.read_bytes()
+            if hashlib.sha256(plan_bytes).hexdigest() != materialization["plan_digest"]:
+                raise SupervisorError("materialized backlog plan changed after epoch creation")
+            tickets = self._parse_plan_tickets(plan_bytes.decode("utf-8"))
+            state = read_json(self.state_path)
+            epoch = next(
+                item for item in state["plan_epochs"]
+                if item["epoch_id"] == state["current_plan_epoch_id"]
+            )
+            if tickets != epoch["tickets"]:
+                raise SupervisorError("materialized backlog plan contradicts the immutable epoch frontier")
+            return tickets
         plan = (self.root / self.policy["implementation_plan"]).read_text(encoding="utf-8")
         return self._parse_plan_tickets(plan)
+
+    def _current_backlog_materialization(self) -> dict[str, Any] | None:
+        """Resolve immutable backlog artifacts for the current successor epoch."""
+        if not self.state_path.is_file() or not self.backlog_cycle_path.is_file():
+            return None
+        state = read_json(self.state_path)
+        cycle = read_json(self.backlog_cycle_path)
+        materialization = cycle.get("materialization") if isinstance(cycle, dict) else None
+        if (
+            state.get("version") != STATE_VERSION
+            or not isinstance(cycle, dict)
+            or cycle.get("version") != 1
+            or cycle.get("phase") != "READY_EPOCH"
+            or not isinstance(materialization, dict)
+            or materialization.get("epoch_id") != state.get("current_plan_epoch_id")
+        ):
+            return None
+        required = {
+            "epoch_id", "plan", "index", "tickets", "ticket_sources",
+            "plan_digest", "index_digest",
+        }
+        if set(materialization) != required:
+            raise SupervisorError("current backlog materialization is malformed")
+        if (
+            any(not isinstance(materialization.get(key), str) for key in (
+                "epoch_id", "plan", "index", "tickets", "plan_digest", "index_digest",
+            ))
+            or not isinstance(materialization.get("ticket_sources"), dict)
+            or any(
+                not re.fullmatch(r"[0-9a-f]{64}", materialization[key])
+                for key in ("plan_digest", "index_digest")
+            )
+        ):
+            raise SupervisorError("current backlog materialization identity is malformed")
+        plan = self._backlog_cycle_artifact(materialization["plan"])
+        index = self._backlog_cycle_artifact(materialization["index"])
+        tickets = self._backlog_cycle_artifact(materialization["tickets"])
+        if (
+            not plan.is_file()
+            or not index.is_file()
+            or not tickets.is_dir()
+            or hashlib.sha256(plan.read_bytes()).hexdigest() != materialization["plan_digest"]
+            or hashlib.sha256(index.read_bytes()).hexdigest() != materialization["index_digest"]
+        ):
+            raise SupervisorError("current backlog materialization is missing or changed")
+        return materialization
 
     @staticmethod
     def _parse_plan_tickets(plan: str) -> list[str]:
