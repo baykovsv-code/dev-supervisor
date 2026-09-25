@@ -13,6 +13,7 @@
     "audit_events": {"type": "array", "items": {"$ref": "audit-event-v1.schema.json"}},
     "engine_requirement": {"anyOf": [{"type": "null"}, {"$ref": "engine-binding-v2.schema.json#/$defs/identity"}]},
     "state_predecessor": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/predecessor"}]},
+    "legacy_cutover": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/legacy_cutover"}]},
     "pending_push": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/pending_push"}]}
   },
   "$defs": {
@@ -23,6 +24,15 @@
         "version": {"const": 6},
         "checksum": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "archive": {"type": "string", "pattern": "^state-predecessors/[0-9a-f]{64}\\.json$"}
+      }
+    },
+    "legacy_cutover": {
+      "type": "object", "additionalProperties": false,
+      "required": ["version", "checksum", "archive"],
+      "properties": {
+        "version": {"const": 1},
+        "checksum": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "archive": {"type": "string", "pattern": "^legacy-cutover-archives/[0-9a-f]{64}\\.json$"}
       }
     },
     "pending_push": {

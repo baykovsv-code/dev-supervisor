@@ -142,6 +142,43 @@ the active controller; archive and switch only at quiescence; then reconcile
 read-only. A stale host or incompatible state makes no write. Rollback stops the new
 generation before restoring the archived predecessor.
 
+## Qualified 1.x cutover and rollback
+
+The legacy conversion is opt-in. Until its binding switch, the pinned AS-IS engine
+continues unchanged; `status` and `resume` do not implicitly convert it. Rehearse the
+following only on an isolated copy before the T12/final-human gate. It accepts exactly
+a version-4 `HUMAN_GATE` with no active run or pending commit, a gate ticket matching
+the state, and a gate HEAD/fingerprint matching the product. A dirty tree is supported
+only when that preserved gate fingerprint matches. Unknown versions, missing/ambiguous
+gate ownership, active model/check/commit control, or a dirty mismatch are rejected
+without writes.
+
+The source engine must be clean at its exact revision. The sole documented exception
+is the pinned AS-IS `.self-repair-disabled` untracked guard: its checksum is retained
+in the predecessor receipt and it must not be removed to make cutover proceed.
+
+1. Create a separate clean immutable 2.0 engine checkout and verify the isolated
+   product is at the intended gate.
+2. Run `./dev legacy-cutover dry-run --candidate <2.0-engine>`. Preserve the returned
+   `source_checksum`; it is the exact reviewed source receipt.
+3. The operator holding the configured host lease makes the human decision. Abort is
+   simply no apply: retain the dry-run output and leave the legacy binding untouched.
+4. For go, run `./dev legacy-cutover apply --candidate <2.0-engine> --source-checksum
+   <receipt> --go`, then run only read-only `./dev status` and record go/no-go.
+
+The apply archive is retained under `.dev-supervisor/legacy-cutover-archives/`. It
+contains checksummed exact engine receipt/revision, binding, policy, state, quota
+ledger, run artifacts, Git HEAD/branch/fingerprint/product snapshot, and observed lock
+authority. The quota conversion invalidates every legacy authorization: a consumed
+authorization is never reusable after cutover. The archive is never deleted by this
+workflow.
+
+For a recorded no-go, first stop the new controller and reach a quiescent checkpoint,
+then the lease holder runs `./dev legacy-cutover rollback`. It restores the archived
+legacy binding, policy, state, and quota ledger, preserves product HEAD/working tree,
+and leaves exactly the restored legacy lock authority. Do not manually edit an archive,
+binding, state, quota ledger, or lock to force either direction.
+
 ## Developing Supervisor 2.0
 
 Do not start T00 until the requirements index, architecture, plan, and ticket set have

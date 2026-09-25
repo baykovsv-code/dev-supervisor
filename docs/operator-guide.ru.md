@@ -94,6 +94,40 @@ quiescent checkpoint после archive и read-only reconciliation. Rollback с
 migration state или невозможность сохранить guard — stop, preserve evidence, request
 human decision.
 
+## Qualified cutover 1.x и rollback
+
+Переход legacy → 2.0 выполняется только явно. До binding switch pinned AS-IS engine
+продолжает работу без изменения: `status` и `resume` не запускают implicit conversion.
+Сначала повторите процедуру только на isolated copy, до T12/final human gate. Допустим
+лишь state version 4 в `HUMAN_GATE`: нет active run/pending commit, ticket gate совпадает
+со state, а HEAD/fingerprint gate совпадают с product. Dirty tree допускается только с
+таким preserved fingerprint. Unknown version, missing/ambiguous gate ownership, active
+model/check/commit либо dirty mismatch отклоняются без записи.
+
+Source engine должен быть clean на exact revision. Единственное документированное
+исключение — untracked guard pinned AS-IS `.self-repair-disabled`: его checksum
+сохраняется в predecessor receipt; не удаляйте guard ради выполнения cutover.
+
+1. Подготовьте separate clean immutable checkout engine 2.0 и проверьте нужный gate.
+2. Выполните `./dev legacy-cutover dry-run --candidate <2.0-engine>` и сохраните
+   возвращённый `source_checksum` как reviewed receipt.
+3. Human с host lease принимает go/no-go. Abort означает не выполнять apply: сохранить
+   dry-run evidence и оставить legacy binding без изменения.
+4. Для go: `./dev legacy-cutover apply --candidate <2.0-engine> --source-checksum
+   <receipt> --go`; затем используйте только read-only `./dev status` и запишите решение.
+
+Archive `.dev-supervisor/legacy-cutover-archives/` сохраняется и содержит checksummed
+engine receipt/revision, binding, policy, state, quota ledger, run artifacts, Git
+HEAD/branch/fingerprint/product snapshot и observed lock authority. Конверсия quota
+invalidates every legacy authorization: consumed authorization никогда не используется
+повторно. Workflow не удаляет predecessor archive.
+
+При no-go сначала остановите new controller и достигните quiescent checkpoint, затем
+holder lease запускает `./dev legacy-cutover rollback`. Он восстанавливает archived
+legacy binding, policy, state и quota ledger, сохраняет product HEAD/working tree и
+оставляет только restored legacy lock authority. Не редактируйте вручную archive,
+binding, state, quota или lock для принудительного перехода/rollback.
+
 Подробнее и точные текущие bootstrap commands — в [английском operator guide](operator-guide.md),
 [architecture](architecture/architecture.md) и соответствующем ticket. До final gate
 не выполняйте T99 и не переключайте live binding.

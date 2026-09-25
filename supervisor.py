@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 from copy import deepcopy
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -34,6 +35,8 @@ ENGINE_BINDING_VERSION = 2
 ENGINE_PROTOCOL_VERSION = 1
 ENGINE_ARCHIVES_DIRECTORY = "engine-archives"
 ENGINE_UPDATE_NAME = "engine-update.json"
+LEGACY_CUTOVER_NAME = "legacy-cutover.json"
+LEGACY_CUTOVER_ARCHIVES_DIRECTORY = "legacy-cutover-archives"
 HOST_OWNER_NAME = "host-owner.json"
 REPORT_FIELDS = {
     "role", "ticket", "status", "acceptance_passed", "tests_passed",
@@ -1783,6 +1786,7 @@ class Supervisor:
         self.engine_binding_path = self.runtime / ENGINE_BINDING_NAME
         self.host_owner_path = self.runtime / HOST_OWNER_NAME
         self.engine_update_path = self.runtime / ENGINE_UPDATE_NAME
+        self.legacy_cutover_path = self.runtime / LEGACY_CUTOVER_NAME
         self.host_capability_grants, self.host_capability_provenance, self.host_push_target = load_host_capability_grants(
             self.host_capabilities_path
         )
@@ -2086,6 +2090,234 @@ class Supervisor:
             raise SupervisorError("rollback changed product state; active binding was restored")
         result = {"status": "rolled_back", "archive": archive_ref, "product_snapshot": before}
         atomic_write_json(self.engine_update_path, result)
+        return result
+
+    def _legacy_cutover_artifacts(self) -> dict[str, dict[str, str]]:
+        """Return exact, bounded-by-runtime evidence for legacy run artifacts.
+
+        The source runtime is operator-local and ignored by Git.  Encoding each
+        regular artifact in the archive (rather than retaining a path reference)
+        means a rollback does not depend on an unchanged legacy runtime directory.
+        """
+        artifacts: dict[str, dict[str, str]] = {}
+        runs = self.runs_dir
+        if not runs.exists():
+            return artifacts
+        if not runs.is_dir():
+            raise SupervisorError("legacy run-artifact location is not a directory")
+        for path in sorted(runs.rglob("*")):
+            if path.is_symlink() or not path.is_file():
+                if path.is_symlink():
+                    raise SupervisorError("legacy run artifacts may not contain symbolic links")
+                continue
+            relative = path.relative_to(self.runtime).as_posix()
+            raw = path.read_bytes()
+            artifacts[relative] = {
+                "sha256": hashlib.sha256(raw).hexdigest(),
+                "base64": base64.b64encode(raw).decode("ascii"),
+            }
+        return artifacts
+
+    @staticmethod
+    def _legacy_cutover_bytes(path: Path) -> dict[str, str]:
+        raw = path.read_bytes()
+        return {"sha256": hashlib.sha256(raw).hexdigest(), "base64": base64.b64encode(raw).decode("ascii")}
+
+    def _legacy_cutover_engine_identity(self, root: Path) -> dict[str, Any]:
+        """Receipt the pinned AS-IS engine, retaining its documented safety guard."""
+        root = root.resolve()
+        git = GitRepo(root)
+        git.require_repository()
+        unexpected = [entry for entry in git.status_entries() if entry != ("??", ".self-repair-disabled")]
+        if unexpected:
+            raise SupervisorError("legacy source engine has unsupported dirty files")
+        guard = root / ".self-repair-disabled"
+        if guard.exists() and (not guard.is_file() or guard.is_symlink()):
+            raise SupervisorError("legacy source engine self-repair guard is malformed")
+        revision = git.head()
+        if not re.fullmatch(r"[0-9a-f]{40,64}", revision):
+            raise SupervisorError("legacy source engine revision is not immutable")
+        required = (root / "supervisor.py", root / "schemas", root / "tests")
+        if any(not path.exists() for path in required):
+            raise SupervisorError("legacy source engine is missing supervisor.py, schemas, or tests")
+        return {
+            "revision": revision, "build_id": self._directory_digest(root),
+            "schema_version": 4, "protocol_version": ENGINE_PROTOCOL_VERSION,
+            "self_repair_guard_sha256": hashlib.sha256(guard.read_bytes()).hexdigest() if guard.exists() else None,
+        }
+
+    def _legacy_cutover_source(self) -> dict[str, Any]:
+        """Validate the one supported 1.x checkpoint without writing anything."""
+        if not self.engine_binding_path.exists():
+            raise SupervisorError("legacy cutover requires a path-only 1.x engine binding")
+        binding = self._load_engine_binding()
+        if binding["kind"] != "legacy":
+            raise SupervisorError("legacy cutover source is already bound to a versioned engine")
+        source_engine = Path(binding["engine_root"]).expanduser().resolve()
+        if source_engine == self.assets_dir:
+            raise SupervisorError("legacy cutover source engine must differ from the candidate controller")
+        engine = self._legacy_cutover_engine_identity(source_engine)
+        state = read_json(self.state_path)
+        # The historical T30 gate is the only qualified 1.x source.  In
+        # particular, conversion of an active run, verification, commit, or a
+        # guessed terminal state is deliberately outside the supported surface.
+        if state.get("version") != 4:
+            raise SupervisorError("unsupported legacy source state version; only 1.x v4 HUMAN_GATE is qualified")
+        if state.get("phase") != "HUMAN_GATE":
+            raise SupervisorError("legacy source is active or unsupported; only HUMAN_GATE is qualified")
+        if state.get("active_run") is not None or state.get("pending_commit") is not None:
+            raise SupervisorError("legacy source has active model/check/commit control and cannot be cut over")
+        gate = state.get("gate")
+        if not isinstance(gate, dict) or gate.get("ticket") != state.get("current_ticket"):
+            raise SupervisorError("legacy HUMAN_GATE ownership is missing or ambiguous")
+        if gate.get("head") != self.git.head() or gate.get("fingerprint") != self.git.fingerprint():
+            raise SupervisorError("legacy dirty state is unsupported because its preserved gate fingerprint disagrees")
+        if not isinstance(state.get("current_ticket"), str) or not isinstance(state.get("completed_tickets"), list):
+            raise SupervisorError("legacy source ticket lineage is malformed or ambiguous")
+        raw_policy = read_json(self.root / PROJECT_POLICY_NAME)
+        if raw_policy.get("version") not in {1, 2}:
+            raise SupervisorError("unsupported legacy policy version")
+        policy, policy_report = migrate_legacy_policy(raw_policy)
+        validate_project_policy(policy)
+        raw_quota = read_json(self.runtime / "quota.json")
+        if raw_quota.get("version") != 2:
+            raise SupervisorError("unsupported legacy quota ledger version")
+        quota_target = self.quota._convert_v2(raw_quota) if isinstance(self.quota, ManualQuotaProvider) else None
+        if quota_target is None:
+            raise SupervisorError("legacy cutover requires the manual quota ledger provider")
+        product = self._product_snapshot()
+        archive = {
+            "version": 1,
+            "kind": "qualified_1x_predecessor",
+            "engine": engine,
+            "binding": binding,
+            "policy": raw_policy,
+            "state": state,
+            "quota": raw_quota,
+            "source_files": {
+                PROJECT_POLICY_NAME: self._legacy_cutover_bytes(self.root / PROJECT_POLICY_NAME),
+                "state.json": self._legacy_cutover_bytes(self.state_path),
+                "quota.json": self._legacy_cutover_bytes(self.runtime / "quota.json"),
+            },
+            "artifacts": self._legacy_cutover_artifacts(),
+            "git": {"head": self.git.head(), "branch": self.git.branch(), "fingerprint": self.git.fingerprint(),
+                    "product_snapshot": product},
+            "lock_ownership": {"authority": "legacy supervisor.lock", "owner": "current cutover operation"},
+        }
+        return {
+            "archive": archive, "source_checksum": content_checksum(archive), "binding": binding,
+            "state": state, "policy": policy, "policy_report": policy_report,
+            "quota": quota_target, "product_snapshot": product,
+        }
+
+    def legacy_cutover_dry_run(self, candidate: Path) -> dict[str, Any]:
+        """Qualify a supported 1.x gate and produce an entirely non-writing receipt."""
+        candidate = candidate.expanduser().resolve()
+        source = self._legacy_cutover_source()
+        identity = self._engine_identity(candidate)
+        if candidate == Path(source["binding"]["engine_root"]).expanduser().resolve():
+            raise SupervisorError("legacy cutover candidate must be a separate immutable 2.0 checkout")
+        migrated, state_report = self._legacy_cutover_migrated_state(source)
+        archive_ref = f"{LEGACY_CUTOVER_ARCHIVES_DIRECTORY}/{source['source_checksum']}.json"
+        migrated["legacy_cutover"] = {"version": 1, "checksum": source["source_checksum"], "archive": archive_ref}
+        migrated.setdefault("audit_events", [])
+        prior = migrated["audit_events"][-1]["event_id"] if migrated["audit_events"] else None
+        migrated["audit_events"].append(audit_event("legacy_cutover_converted", {
+            "predecessor_checksum": source["source_checksum"], "from_engine_revision": source["archive"]["engine"]["revision"],
+        }, prior))
+        compatibility = {"state": {"minimum": STATE_VERSION, "maximum": STATE_VERSION},
+                         "policy": {"minimum": POLICY_VERSION, "maximum": POLICY_VERSION},
+                         "protocol": {"minimum": ENGINE_PROTOCOL_VERSION, "maximum": ENGINE_PROTOCOL_VERSION}}
+        return {
+            "version": 1, "status": "supported", "writes_required": True,
+            "source_checksum": source["source_checksum"], "archive": archive_ref,
+            "candidate": {"root": str(candidate), "identity": identity, "compatibility": compatibility},
+            "policy": source["policy_report"], "state": {**state_report, "target_checksum": content_checksum(migrated)},
+            "quota": {"from_version": 2, "to_version": 3, "source_checksum": content_checksum(source["archive"]["quota"]),
+                      "target_checksum": content_checksum(source["quota"]), "consumed_authorizations": "invalidated; never reusable"},
+            "product_snapshot": source["product_snapshot"],
+            "rejection_boundary": "Only an exact v4 HUMAN_GATE with matching gate HEAD/fingerprint and no active control is supported.",
+        }
+
+    def _legacy_cutover_migrated_state(self, source: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Make the v4 epoch conversion repeatable from archived source bytes."""
+        updated_at = source["state"].get("updated_at")
+        if not isinstance(updated_at, str):
+            raise SupervisorError("legacy HUMAN_GATE lacks a durable update timestamp for deterministic conversion")
+        migrated, report = self._migrate_state_v4(source["state"])
+        # _new_plan_epoch normally makes a new UUID/time for a new plan.  A
+        # conversion must instead have the same target for dry-run and apply.
+        epoch = migrated["plan_epochs"][0]
+        epoch["epoch_id"] = source["source_checksum"][:32]
+        epoch["created_at"] = updated_at
+        migrated["current_plan_epoch_id"] = epoch["epoch_id"]
+        return migrated, report
+
+    def apply_legacy_cutover(self, candidate: Path, *, source_checksum: str, go: bool) -> dict[str, Any]:
+        if not go:
+            raise SupervisorError("legacy cutover binding switch requires an explicit human go decision")
+        report = self.legacy_cutover_dry_run(candidate)
+        if source_checksum != report["source_checksum"]:
+            raise SupervisorError("legacy cutover source changed or does not match the reviewed dry-run receipt")
+        proposed = {"kind": "v2", "identity": report["candidate"]["identity"]}
+        self._assert_writer_lease(proposed)
+        source = self._legacy_cutover_source()
+        archive_path = self.runtime / report["archive"]
+        if archive_path.exists():
+            raise SupervisorError("legacy predecessor archive already exists; use rollback or investigate, never overwrite it")
+        migrated, _state_report = self._legacy_cutover_migrated_state(source)
+        migrated["legacy_cutover"] = {"version": 1, "checksum": report["source_checksum"], "archive": report["archive"]}
+        migrated.setdefault("audit_events", [])
+        prior = migrated["audit_events"][-1]["event_id"] if migrated["audit_events"] else None
+        migrated["audit_events"].append(audit_event("legacy_cutover_converted", {
+            "predecessor_checksum": report["source_checksum"], "from_engine_revision": source["archive"]["engine"]["revision"],
+        }, prior))
+        if content_checksum(migrated) != report["state"]["target_checksum"]:
+            raise SupervisorError("legacy state conversion was not deterministic")
+        before = source["product_snapshot"]
+        # Archive precedes every conversion write.  It includes exact policy, state,
+        # quota, artifacts, Git identity, and the authority observed under this lock.
+        atomic_write_json(archive_path, source["archive"])
+        atomic_write_json(self.root / PROJECT_POLICY_NAME, source["policy"])
+        atomic_write_json(self.runtime / "quota.json", source["quota"])
+        migrated["engine_requirement"] = report["candidate"]["identity"]
+        atomic_write_json(self.state_path, migrated)
+        new_binding = {"version": ENGINE_BINDING_VERSION, "engine_root": report["candidate"]["root"],
+                       "identity": report["candidate"]["identity"], "compatibility": report["candidate"]["compatibility"]}
+        # This single replace is the authority handoff.  Nothing auto-selects it:
+        # the reviewed receipt and explicit --go are both required.
+        atomic_write_json(self.engine_binding_path, new_binding)
+        reconciled = self._product_snapshot() == before and self.git.head() == source["archive"]["git"]["head"]
+        if not reconciled:
+            atomic_write_json(self.engine_binding_path, source["binding"])
+            raise SupervisorError("cutover reconciliation changed product HEAD or working tree; legacy binding was restored")
+        result = {"status": "cutover_applied", "archive": report["archive"], "source_checksum": report["source_checksum"],
+                  "identity": report["candidate"]["identity"], "product_snapshot": before,
+                  "required_human_action": "Run read-only status with the new controller, then record go/no-go; use legacy-cutover rollback for no-go."}
+        atomic_write_json(self.legacy_cutover_path, result)
+        return result
+
+    def rollback_legacy_cutover(self) -> dict[str, Any]:
+        record = read_json(self.legacy_cutover_path)
+        archive_ref = record.get("archive")
+        if not isinstance(archive_ref, str) or Path(archive_ref).is_absolute() or ".." in Path(archive_ref).parts:
+            raise SupervisorError("legacy cutover rollback record is malformed")
+        archive = read_json(self.runtime / archive_ref)
+        if archive.get("kind") != "qualified_1x_predecessor" or content_checksum(archive) != record.get("source_checksum"):
+            raise SupervisorError("legacy cutover predecessor archive is missing or inconsistent")
+        state = self.load_state(read_only=True)
+        self._engine_update_is_quiescent(state)
+        current = self._assert_engine_binding(state)
+        self._assert_writer_lease(current)
+        before = self._product_snapshot()
+        atomic_write_json(self.engine_binding_path, archive["binding"])
+        atomic_write_json(self.root / PROJECT_POLICY_NAME, archive["policy"])
+        atomic_write_json(self.runtime / "quota.json", archive["quota"])
+        atomic_write_json(self.state_path, archive["state"])
+        if self._product_snapshot() != before or self.git.head() != archive["git"]["head"]:
+            raise SupervisorError("legacy rollback changed product HEAD or working tree; preserve evidence and stop")
+        result = {"status": "rolled_back", "archive": archive_ref, "product_snapshot": before}
+        atomic_write_json(self.legacy_cutover_path, result)
         return result
 
     @property
@@ -2916,6 +3148,15 @@ class Supervisor:
         return self.runtime / STATE_PREDECESSORS_DIRECTORY / f"{checksum}.json"
 
     def _validate_state_v7(self, state: dict[str, Any]) -> str | None:
+        cutover = state.get("legacy_cutover")
+        if cutover is not None:
+            if not isinstance(cutover, dict) or set(cutover) != {"version", "checksum", "archive"}:
+                return "legacy cutover predecessor linkage is missing or malformed"
+            checksum, archive = cutover.get("checksum"), cutover.get("archive")
+            if cutover.get("version") != 1 or not isinstance(checksum, str) or not re.fullmatch(r"[0-9a-f]{64}", checksum):
+                return "legacy cutover predecessor identity is unsupported or malformed"
+            if archive != f"{LEGACY_CUTOVER_ARCHIVES_DIRECTORY}/{checksum}.json":
+                return "legacy cutover predecessor archive link is malformed"
         predecessor = state.get("state_predecessor")
         if predecessor is None:
             # A freshly initialized v7 runtime has no converted predecessor.
@@ -8582,6 +8823,15 @@ def build_parser() -> argparse.ArgumentParser:
     engine_activate.add_argument("--candidate", type=Path, required=True)
     engine_activate.add_argument("--go", action="store_true", help="record the explicit human go decision")
     engine_update_sub.add_parser("rollback", help="restore the archived binding after stopping the new generation")
+    legacy_cutover = subparsers.add_parser("legacy-cutover", help="opt-in qualified 1.x to 2.0 conversion and binding handoff")
+    legacy_cutover_sub = legacy_cutover.add_subparsers(dest="legacy_cutover_command", required=True)
+    legacy_dry_run = legacy_cutover_sub.add_parser("dry-run", help="inspect the supported 1.x HUMAN_GATE without writing")
+    legacy_dry_run.add_argument("--candidate", type=Path, required=True)
+    legacy_apply = legacy_cutover_sub.add_parser("apply", help="archive, convert, and atomically switch a reviewed legacy source")
+    legacy_apply.add_argument("--candidate", type=Path, required=True)
+    legacy_apply.add_argument("--source-checksum", required=True, help="exact source_checksum from legacy-cutover dry-run")
+    legacy_apply.add_argument("--go", action="store_true", help="record the explicit human go decision")
+    legacy_cutover_sub.add_parser("rollback", help="restore the checksummed 1.x predecessor after stopping the new controller")
     subparsers.add_parser("status", help="show supervisor state and the current quota snapshot")
     subparsers.add_parser("run", help="run safe ticket progression until an explicit stop state")
     subparsers.add_parser("resume", help="resume only from a safely checkpointed state")
@@ -8810,6 +9060,19 @@ def main(arguments: list[str] | None = None) -> int:
                     result = supervisor.activate_engine_update(args.candidate, go=args.go)
                 else:
                     result = supervisor.rollback_engine_update()
+            print_json(result)
+            return 0
+        if args.command == "legacy-cutover":
+            if args.legacy_cutover_command == "dry-run":
+                print_json(supervisor.legacy_cutover_dry_run(args.candidate))
+                return 0
+            with supervisor.operation_lock():
+                if args.legacy_cutover_command == "apply":
+                    result = supervisor.apply_legacy_cutover(
+                        args.candidate, source_checksum=args.source_checksum, go=args.go,
+                    )
+                else:
+                    result = supervisor.rollback_legacy_cutover()
             print_json(result)
             return 0
         if args.command == "status":

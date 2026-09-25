@@ -4320,6 +4320,101 @@ class ImmutableEngineUpdateTests(unittest.TestCase):
             os.environ.pop("DEV_SUPERVISOR_HOST_ID", None)
 
 
+class LegacyCutoverTests(unittest.TestCase):
+    def setUp(self):
+        SupervisorTests.setUp(self)
+
+    def tearDown(self):
+        SupervisorTests.tearDown(self)
+
+    def _engine(self, name: str) -> Path:
+        engine = Path(tempfile.mkdtemp(dir=self.temporary.name)) / name
+        shutil.copytree(MODULE_PATH.parent, engine, ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"))
+        git(engine, "init", "-b", "main")
+        git(engine, "config", "user.name", "Cutover Test")
+        git(engine, "config", "user.email", "cutover@example.invalid")
+        git(engine, "add", ".")
+        git(engine, "commit", "-m", name)
+        return engine
+
+    def _legacy_runtime(self, legacy: Path) -> Supervisor:
+        (self.root / "docs/architecture/implementation-plan.md").write_text(
+            "| Milestone | Tickets | Gate |\n|---|---|---|\n| 1 | T30 | human |\n", encoding="utf-8",
+        )
+        policy = json.loads((MODULE_PATH.parent / "tests/fixtures/t30-compatibility/policy.json").read_text(encoding="utf-8"))
+        policy["implementation_plan"] = "docs/architecture/implementation-plan.md"
+        (self.root / "dev-supervisor.json").write_text(json.dumps(policy), encoding="utf-8")
+        runtime = self.root / ".dev-supervisor"
+        runtime.mkdir()
+        (runtime / "engine.json").write_text(json.dumps({"engine_root": str(legacy)}), encoding="utf-8")
+        quota = json.loads((MODULE_PATH.parent / "tests/fixtures/t30-compatibility/quota.json").read_text(encoding="utf-8"))
+        (runtime / "quota.json").write_text(json.dumps(quota), encoding="utf-8")
+        (runtime / "runs/r1").mkdir(parents=True)
+        (runtime / "runs/r1/invocation.json").write_text('{"legacy": true}\n', encoding="utf-8")
+        supervisor = Supervisor(self.root, assets_dir=MODULE_PATH.parent, now=lambda: NOW)
+        state = {
+            "version": 4, "phase": "HUMAN_GATE", "current_ticket": "T30", "completed_tickets": [],
+            "active_run": None, "pending_commit": None,
+            "gate": {"ticket": "T30", "head": supervisor.git.head(), "fingerprint": supervisor.git.fingerprint()},
+            "updated_at": "2026-09-20T12:00:00Z",
+        }
+        (runtime / "state.json").write_text(json.dumps(state), encoding="utf-8")
+        return supervisor
+
+    def test_qualified_cutover_is_opt_in_archives_exact_predecessor_and_rolls_back(self):
+        legacy, candidate = self._engine("legacy"), self._engine("candidate")
+        supervisor = self._legacy_runtime(legacy)
+        before_head, before_snapshot = supervisor.git.head(), supervisor._product_snapshot()
+        dry_run = supervisor.legacy_cutover_dry_run(candidate)
+        self.assertEqual(dry_run["status"], "supported")
+        self.assertEqual(supervisor.git.head(), before_head)
+        self.assertEqual(supervisor._product_snapshot(), before_snapshot)
+        self.assertEqual(json.loads(supervisor.state_path.read_text(encoding="utf-8"))["version"], 4)
+        identity = dry_run["candidate"]["identity"]
+        supervisor.host_owner_path.write_text(json.dumps({
+            "version": 1, "host_id": "cutover-host", "lease_id": "lease", "engine_build_id": identity["build_id"],
+        }), encoding="utf-8")
+        os.environ["DEV_SUPERVISOR_HOST_ID"] = "cutover-host"
+        try:
+            with self.assertRaisesRegex(SupervisorError, "human go"):
+                supervisor.apply_legacy_cutover(candidate, source_checksum=dry_run["source_checksum"], go=False)
+            result = supervisor.apply_legacy_cutover(candidate, source_checksum=dry_run["source_checksum"], go=True)
+            self.assertEqual(result["status"], "cutover_applied")
+            archive = json.loads((supervisor.runtime / result["archive"]).read_text(encoding="utf-8"))
+            self.assertEqual(archive["state"]["version"], 4)
+            self.assertIn("state.json", archive["source_files"])
+            self.assertIn("runs/r1/invocation.json", archive["artifacts"])
+            self.assertEqual(json.loads(supervisor.state_path.read_text(encoding="utf-8"))["version"], 7)
+            converted_quota = json.loads((supervisor.runtime / "quota.json").read_text(encoding="utf-8"))
+            self.assertEqual(converted_quota["observations"][0]["authorizations"][0]["status"], "invalidated")
+            self.assertEqual(supervisor.git.head(), before_head)
+            self.assertEqual(supervisor._product_snapshot(), before_snapshot)
+            current = Supervisor(self.root, assets_dir=candidate, now=lambda: NOW)
+            rolled_back = current.rollback_legacy_cutover()
+            self.assertEqual(rolled_back["status"], "rolled_back")
+            self.assertEqual(json.loads(supervisor.state_path.read_text(encoding="utf-8"))["version"], 4)
+            self.assertEqual(supervisor.git.head(), before_head)
+            self.assertEqual(supervisor._product_snapshot(), before_snapshot)
+        finally:
+            os.environ.pop("DEV_SUPERVISOR_HOST_ID", None)
+
+    def test_active_and_dirty_unsupported_sources_are_rejected_without_writes(self):
+        legacy, candidate = self._engine("legacy"), self._engine("candidate")
+        supervisor = self._legacy_runtime(legacy)
+        original = supervisor.state_path.read_bytes()
+        state = json.loads(original)
+        state["active_run"] = {"id": "active"}
+        supervisor.state_path.write_text(json.dumps(state), encoding="utf-8")
+        with self.assertRaisesRegex(SupervisorError, "active model/check/commit"):
+            supervisor.legacy_cutover_dry_run(candidate)
+        self.assertEqual(supervisor.state_path.read_text(encoding="utf-8"), json.dumps(state))
+        state["active_run"] = None
+        state["gate"]["fingerprint"] = "0" * 64
+        supervisor.state_path.write_text(json.dumps(state), encoding="utf-8")
+        with self.assertRaisesRegex(SupervisorError, "dirty state is unsupported"):
+            supervisor.legacy_cutover_dry_run(candidate)
+
+
 class ColdStartTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
