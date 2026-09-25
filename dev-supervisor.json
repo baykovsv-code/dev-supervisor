@@ -42,10 +42,10 @@
   "initial_completed_tickets": [],
   "milestones": [
     {
-      "after_ticket": "T12",
-      "before_ticket": "T99",
-      "message": "Qualification is complete. Do not release this gate under Supervisor 1.x; review cutover and activate one immutable Supervisor 2.0 controller generation.",
-      "name": "Supervisor 2.0 cutover approval"
+      "after_ticket": "T23",
+      "before_ticket": "T24",
+      "message": "Deterministic 2.1 qualification is complete. Run and review at least one bounded isolated real Codex acceptance workflow, preserve its redacted runtime receipt, then release T24 only for an acceptable result.",
+      "name": "Supervisor 2.1 real Codex acceptance"
     }
   ],
   "model_watchdog": {
