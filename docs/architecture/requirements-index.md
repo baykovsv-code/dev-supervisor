@@ -31,11 +31,11 @@ English.
 | R10 | Versioned configuration contract | Move operator-controlled thresholds and capabilities into validated documented configuration; reject unknown, contradictory, or out-of-range values and expose effective redacted configuration. |
 | R11 | User-requested bounded improvements | Require an explicit trigger, architecture impact review, iterative correction, approval, bounded plan/ticket, verification, and escalation to a normal cycle when bounds are exceeded. |
 | R12 | Self-development | Apply the ordinary requirements/architecture/plan/check workflow plus immutable-controller handoff; never edit the controller generation executing the run. |
-| R13 | English 2.0 documentation | Requirements, architecture, ADRs, plans, tickets, policies, runbooks, reports, and templates created for 2.0 are English. Russian 1.x material remains an unmodified archive. |
+| R13 | English authority and maintained operator translations | English remains the complete normative 2.0 documentation set. Maintain a deliberately bounded Russian operator subset covering introduction, core behavior, safety rules, commands/workflows, limitations, quota, gates, commit/push/self-modification, and recovery. Behavior-changing tickets classify documentation impact and update affected English and maintained Russian operator material. A lightweight manifest and deterministic pair/link/staleness checks protect the maintained subset without claiming semantic equivalence. Classify legacy material as current, transitional, archived, or obsolete, while retaining migration, rollback, compatibility, and cutover evidence through the approved cutover and rollback window. |
 | R14 | Remove dead forecast behavior | Do not implement or migrate `forecast.fallback_ticket_hours`; do not implement or migrate quota forecasting. Current trusted quota observations and guards remain required. |
 | R15 | 1.x to 2.0 cutover | Provide versioned schemas, dry-run conversion, checksummed predecessor archive, exact HEAD/fingerprint preservation, one controller/lock authority, qualification on a copy, and rehearsed rollback. |
 | R16 | AS-IS behavioral preservation | The initial extraction into this repository must remain byte-equivalent for engine-owned runtime files and pass the complete 1.x regression suite before any 2.0 change. |
-| R17 | Rolling personal-assistant compatibility | Every implementation candidate through T11 in authoritative plan order, including an inserted prerequisite, must pass a no-model compatibility harness against a redacted real T30 policy/state fixture. Live personal-assistant remains on an immutable AS-IS checkout until T12 and the final human cutover gate. |
+| R17 | Rolling personal-assistant compatibility | Every implementation candidate through T11 in authoritative plan order, including inserted prerequisites, must pass a no-model compatibility harness against a redacted real T30 policy/state fixture. Live personal-assistant remains on an immutable AS-IS checkout until T12 and the final human cutover gate. |
 | R18 | Deterministic-verification failure recovery | An unchanged `VERIFICATION_FAILED` checkpoint must not loop by rerunning the failed check. An explicit, audited, fail-closed same-ticket recovery must validate the exact model checkpoint, exactly one currently configured failed check, and its durable log without consuming quota or invoking a model by itself; host-verification-specific handling remains stricter, and repaired work must pass the full verification suite and ordinary scope and commit gates. |
 
 ## Cross-cutting invariants
@@ -51,6 +51,9 @@ English.
    approved legacy `personal-assistant` fixture without a model or state mutation.
 9. Deterministic verification failure never authorizes an unchanged retry or bypasses
    verification, scope, or commit gates.
+10. English documentation is normative. Translation checks establish declared pairing,
+    valid links, and freshness only; they do not establish semantic equivalence or make
+    translated text an authority source.
 
 ## Deliberate exclusions
 

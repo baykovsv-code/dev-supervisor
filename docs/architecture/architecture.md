@@ -159,10 +159,49 @@ initial path binding without converting product state. Before T00, the live proj
 rebound to a separate detached AS-IS checkout at extraction commit `41f6757`; the
 development checkout is no longer executable authority for that project.
 
+## Documentation governance
+
+English is the complete normative documentation set. A bounded Russian operator
+subset is maintained for introduction, core behavior, safety rules, commands and
+workflows, limitations, quota, gates, commit/push/self-modification, and recovery.
+The translation manifest identifies each maintained English/Russian pair and records
+the reviewed normative-English content digest as its freshness basis. Deterministic
+checks validate unique declared pairs, resolvable links, and digest staleness;
+they deliberately do not claim semantic equivalence, and Russian text does not become
+an independent authority source.
+
+Every pending and future implementation ticket records a `Documentation impact`
+classification. A behavior change must update the affected normative English operator
+material and every affected document in the maintained Russian subset in the same
+ticket. `None` is an explicit, reviewable classification rather than an omission.
+
+The documentation inventory classifies legacy material as current, transitional,
+archived, or obsolete. Classification is not deletion: migration, rollback,
+compatibility, and cutover evidence remains visible and linked until both the approved
+cutover and its rollback window are complete. Final qualification includes a
+pre-cutover documentation gate that validates the manifest, links, freshness, current
+operator workflows, and retained recovery evidence.
+
+## Protected control-path snapshot recovery
+
+Product-snapshot comparison excludes the configured supervisor-control paths because
+those paths are controller evidence, not product delta. The complete Git checkpoint
+fingerprint continues to cover those paths, so the exclusion cannot hide a changed
+control file.
+
+One narrowly defined recovery may reprocess a completed, read-only protected-scope
+architecture review that the legacy product-snapshot count mismatch falsely blocked.
+It consumes neither a new model invocation nor a quota authorization and is allowed
+only when the ticket, run, HEAD, branch, dirty path set and contents, structured report,
+artifacts, quota audit, and full checkpoint fingerprint still match the durable
+checkpoint exactly. Any missing, ambiguous, stale, or altered element fails closed.
+This is not a force-state or break-glass mechanism and grants no general checkpoint
+override.
+
 ## Rolling compatibility and activation
 
 Compatibility is a completion gate for every implementation ticket through T11 in
-authoritative plan order, including an inserted prerequisite, not a T12-only activity.
+authoritative plan order, including inserted prerequisites, not a T12-only activity.
 T00 creates a redacted, checksummed fixture from the real T30 `HUMAN_GATE` policy and
 runtime shape plus a deterministic no-model harness. All subsequent ticket verification
 runs that harness.

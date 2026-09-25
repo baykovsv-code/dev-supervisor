@@ -6,6 +6,9 @@ Implement R15 using the state/schema and engine-update foundations.
 
 ## Scope
 
+- Prerequisites: completed T00-T10 (including F09), F10, and F11 in authoritative
+  plan order.
+
 - Define supported 1.x quiescent source states and explicit rejection reasons.
 - Archive exact engine revision, policy, state, quota ledger, artifacts, Git identity,
   lock ownership, and checksums.
@@ -25,6 +28,16 @@ Implement R15 using the state/schema and engine-update foundations.
 - Golden real-state fixtures pass dry-run and invariant checks.
 - The pre-cutover T00 compatibility harness still passes. Conversion is opt-in and
   never prevents the pinned AS-IS engine from continuing before the binding switch.
+- Normative English cutover/migration/rollback operator instructions and every
+  affected document in the maintained Russian operator subset are updated together;
+  the translation manifest, pair/link/staleness checks, and evidence-retention checks
+  pass without claiming semantic equivalence.
+
+## Documentation impact
+
+`Required — behavior and operator workflow.` Update English and maintained Russian
+operator documentation for supported/rejected source states, dry-run, binding switch,
+abort, rollback, quota non-reuse, and retained predecessor evidence.
 
 ## Non-goals
 
