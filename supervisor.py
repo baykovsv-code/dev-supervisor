@@ -784,6 +784,18 @@ import sys
 
 ROOT = Path(__file__).resolve().parent
 binding_path = ROOT / ".dev-supervisor" / "engine.json"
+if "DEV_SUPERVISOR_HOST_ID" not in os.environ:
+    for machine_id_path in (Path("/etc/machine-id"), Path("/var/lib/dbus/machine-id")):
+        try:
+            machine_id = machine_id_path.read_bytes().strip()
+        except OSError:
+            continue
+        if machine_id:
+            material = machine_id + b"\\0" + str(os.getuid()).encode("ascii")
+            os.environ["DEV_SUPERVISOR_HOST_ID"] = (
+                "machine-v1-" + hashlib.sha256(material).hexdigest()
+            )
+            break
 engine_override = os.environ.get("DEV_SUPERVISOR_HOME")
 if engine_override:
     engine_root = Path(engine_override).expanduser().resolve()
