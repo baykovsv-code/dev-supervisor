@@ -98,6 +98,23 @@ remote and branch are validated, only the verified commit may be pushed, and rem
 reachability is confirmed before `REMOTELY_PERSISTED`. Interrupted confirmation is
 idempotent. Normal operation never force-pushes or rewrites history.
 
+The canonical push target is owned by host/operator configuration, not repository
+content. It identifies the Git remote name, its expected credential-free URL identity,
+and the exact target branch. The repository's `expected_branch` is an additional
+restriction only: the checked-out branch, `expected_branch`, and host target branch
+must agree, and the configured remote URL must match the host-owned identity before any
+remote command runs. Supervisor never infers authority from `origin`, another Git
+default, or repository-controlled content. A missing, malformed, credential-bearing,
+or mismatched target fails closed even when the boolean `repository_push` capability
+is enabled.
+
+Credentials remain external in an SSH agent or Git credential helper and never enter
+configuration, state, prompts, logs, or run artifacts. State and audit records contain
+only the safe target identity needed for reconciliation. Existing and legacy
+configurations migrate without a push target and remain unable to push; enabling push
+requires an explicit valid host target. No migration discovers or adopts a remote
+automatically.
+
 ## Quota
 
 Quota decisions use current trusted observations only. High observations may authorize
