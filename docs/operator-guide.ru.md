@@ -96,6 +96,28 @@ human decision.
 
 ## Qualified cutover 1.x и rollback
 
+Полный нормативный английский [T12 runbook qualification и cutover](personal-assistant-qualification.md)
+задаёт preflight, evidence lineage, rehearsal на isolated copy, abort, recovery и
+final human gate. Второй operator должен независимо сверить evidence. Этот workflow
+не разрешает менять live T30 gate; при различии текстов действует английский runbook.
+
+Перед T12 оба operator подтверждают redacted checksummed fixture, все PASS reports
+T00–T11/F09/F10/F11, отдельные clean immutable source/candidate engine checkouts,
+единственный host writer lease и exact v4 `HUMAN_GATE` source. Выполните
+`python3 scripts/check_documentation.py`: manifest должен быть fresh, а результат
+проверяет только declared pair, links и freshness, не semantic equivalence. В пакет
+final gate входят fixture/checksums, dry-run/apply/rollback receipts, pre/post
+read-only status, product HEAD/fingerprint, test output, compatibility lineage и
+documentation-check output; [T99 sentinel](architecture/tickets/99-cutover-sentinel.md)
+не запускается под legacy controller.
+
+Abort при stale manifest, missing receipt, changed source checksum, product diff,
+duplicate invocation/commit, reused quota authorization или двух controller/lock.
+Не исправляйте вручную state, binding, archive, quota или lock. До apply сохраните
+dry-run evidence и оставьте legacy binding; после apply сначала остановите candidate
+в quiescent state, выполните documented rollback и проверьте восстановленные
+HEAD/fingerprint, v4 state, quota и единственный legacy lock.
+
 Переход legacy → 2.0 выполняется только явно. До binding switch pinned AS-IS engine
 продолжает работу без изменения: `status` и `resume` не запускают implicit conversion.
 Сначала повторите процедуру только на isolated copy, до T12/final human gate. Допустим

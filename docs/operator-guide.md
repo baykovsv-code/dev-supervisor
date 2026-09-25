@@ -144,6 +144,11 @@ generation before restoring the archived predecessor.
 
 ## Qualified 1.x cutover and rollback
 
+The complete T12 preflight, evidence lineage, isolated rehearsal, abort, recovery,
+and final-human-gate package is the normative
+[personal-assistant qualification and cutover runbook](personal-assistant-qualification.md).
+Follow it with a second operator; it is not permission to alter the live T30 gate.
+
 The legacy conversion is opt-in. Until its binding switch, the pinned AS-IS engine
 continues unchanged; `status` and `resume` do not implicitly convert it. Rehearse the
 following only on an isolated copy before the T12/final-human gate. It accepts exactly
