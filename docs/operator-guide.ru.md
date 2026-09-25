@@ -140,8 +140,10 @@ Source engine должен быть clean на exact revision. Единстве�
 
 Если новое поколение 2.0 активировано, его read-only status проверен и результат
 принят, один раз выполните `./dev gate accept-cutover --note "..."`. Команда проверяет
-cutover record, predecessor archive, binding, полный префикс завершённых тикетов,
-финальный gate и HEAD. Она не вызывает модель и не создаёт commit. После принятия
+cutover record, predecessor archive, binding, полный префикс завершённых тикетов и
+product lineage. Принимаемый HEAD должен быть либо HEAD финального gate, либо точной
+revision уже активированного и квалифицированного immutable bootstrap successor,
+происходящего от gate HEAD. Команда не вызывает модель и не создаёт commit. После принятия
 прямой rollback в legacy 1.x закрывается, но checksummed archive сохраняется для
 явного восстановления; новая разработка всё равно требует отдельного утверждённого
 plan epoch.

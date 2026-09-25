@@ -216,8 +216,10 @@ released under Supervisor 1.x.
 After the qualified 2.0 generation has been activated and its read-only status has
 been accepted, close the migrated non-executable sentinel exactly once with
 `./dev gate accept-cutover --note "..."`. This command verifies the applied cutover,
-predecessor archive, engine binding, final ticket prefix, gate, and product HEAD. It
-invokes no model and creates no commit. Acceptance closes direct legacy rollback;
+predecessor archive, engine binding, final ticket prefix, and product lineage. The
+accepted HEAD must be either the gate HEAD or the exact revision of an activated,
+qualified immutable bootstrap successor descended from it. The command invokes no
+model and creates no commit. Acceptance closes direct legacy rollback;
 the checksummed predecessor archive remains preserved for explicit recovery, and new
 development still requires a separately approved plan epoch.
 

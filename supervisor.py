@@ -2411,8 +2411,8 @@ class Supervisor:
         expected_completed = epoch["tickets"][:-1]
         if state.get("completed_tickets") != expected_completed:
             raise SupervisorError("cutover acceptance requires the exact completed predecessor ticket prefix")
-        if gate.get("head") != self.git.head():
-            raise SupervisorError("cutover acceptance gate no longer matches product HEAD")
+        actual_head = self.git.head()
+        gate_head = gate.get("head")
         cutover = state.get("legacy_cutover")
         if (
             not isinstance(cutover, dict)
@@ -2428,9 +2428,20 @@ class Supervisor:
             or content_checksum(archive) != cutover["checksum"]
         ):
             raise SupervisorError("cutover acceptance predecessor archive is missing or inconsistent")
-        self._assert_engine_binding(state)
+        binding = self._assert_engine_binding(state)
+        exact_gate_head = gate_head == actual_head
+        qualified_bootstrap_descendant = (
+            isinstance(gate_head, str)
+            and self.git.is_ancestor(gate_head, actual_head)
+            and binding["identity"]["revision"] == actual_head
+        )
+        if not exact_gate_head and not qualified_bootstrap_descendant:
+            raise SupervisorError(
+                "cutover acceptance requires the gate HEAD or its exact activated immutable bootstrap successor"
+            )
         evidence = {
-            "commit": gate["head"],
+            "commit": gate_head,
+            "acceptance_head": actual_head,
             "ticket": ticket,
             "reason": "qualified legacy cutover accepted by the operator",
             "cutover_checksum": cutover["checksum"],
