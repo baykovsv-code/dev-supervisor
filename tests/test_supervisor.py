@@ -8,6 +8,7 @@ from io import StringIO
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -4101,6 +4102,87 @@ class SupervisorTests(unittest.TestCase):
         supervisor.timing_path.write_text("not json", encoding="utf-8")
         dashboard = supervisor.dashboard()
         self.assertIn("PROJECT", dashboard)
+
+
+class ImmutableEngineUpdateTests(unittest.TestCase):
+    def setUp(self):
+        SupervisorTests.setUp(self)
+
+    def tearDown(self):
+        SupervisorTests.tearDown(self)
+
+    def make_supervisor(self, *args, **kwargs):
+        return SupervisorTests.make_supervisor(self, *args, **kwargs)
+
+    def _candidate_engine(self) -> Path:
+        candidate = Path(tempfile.mkdtemp(dir=self.temporary.name)) / "candidate"
+        shutil.copytree(MODULE_PATH.parent, candidate, ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"))
+        git(candidate, "init", "-b", "main")
+        git(candidate, "config", "user.name", "Engine Test")
+        git(candidate, "config", "user.email", "engine@example.invalid")
+        git(candidate, "add", ".")
+        git(candidate, "commit", "-m", "Candidate engine")
+        return candidate
+
+    def test_immutable_binding_requires_host_local_lease_and_stale_host_cannot_write(self):
+        candidate = self._candidate_engine()
+        supervisor = self.make_supervisor()
+        supervisor.runtime.mkdir()
+        state = supervisor.initial_state()
+        state["phase"] = "HUMAN_GATE"
+        supervisor.save_state(state)
+        supervisor.engine_binding_path.write_text(json.dumps({"engine_root": str(MODULE_PATH.parent)}), encoding="utf-8")
+        report = supervisor.engine_update_dry_run(candidate, run_tests=False)
+        os.environ["DEV_SUPERVISOR_HOST_ID"] = "test-host"
+        try:
+            supervisor.host_owner_path.write_text(json.dumps({
+                "version": 1, "host_id": "test-host", "lease_id": "local-lease",
+                "engine_build_id": report["identity"]["build_id"],
+            }), encoding="utf-8")
+            with patch.object(supervisor, "engine_update_dry_run", return_value=report):
+                activated = supervisor.activate_engine_update(candidate, go=True)
+            self.assertEqual(activated["status"], "activated")
+            self.assertTrue((supervisor.runtime / activated["archive"]).exists())
+            with self.assertRaisesRegex(SupervisorError, "active engine path"):
+                supervisor.save_state(supervisor.load_state(read_only=True))
+            current = Supervisor(self.root, policy=deepcopy(self.policy), assets_dir=candidate,
+                                 model_runner=FakeModelRunner([]), command_runner=FakeCommandRunner(), now=lambda: NOW)
+            archive_path = current.runtime / activated["archive"]
+            archive_bytes = archive_path.read_bytes()
+            archive_path.write_text("{broken", encoding="utf-8")
+            with self.assertRaisesRegex(SupervisorError, "invalid JSON"):
+                current.rollback_engine_update()
+            self.assertEqual(json.loads(current.engine_binding_path.read_text(encoding="utf-8"))["identity"], report["identity"])
+            archive_path.write_bytes(archive_bytes)
+            rolled_back = current.rollback_engine_update()
+            self.assertEqual(rolled_back["status"], "rolled_back")
+        finally:
+            os.environ.pop("DEV_SUPERVISOR_HOST_ID", None)
+
+    def test_binding_rejects_incompatible_ranges_before_state_write(self):
+        candidate = self._candidate_engine()
+        supervisor = Supervisor(self.root, policy=deepcopy(self.policy), assets_dir=candidate,
+                                model_runner=FakeModelRunner([]), command_runner=FakeCommandRunner(), now=lambda: NOW)
+        supervisor.runtime.mkdir()
+        state = supervisor.initial_state()
+        supervisor.save_state(state)
+        identity = supervisor._engine_identity(candidate)
+        supervisor.engine_binding_path.write_text(json.dumps({
+            "version": 2, "engine_root": str(candidate), "identity": identity,
+            "compatibility": {"state": {"minimum": 8, "maximum": 8},
+                              "policy": {"minimum": 3, "maximum": 3},
+                              "protocol": {"minimum": 1, "maximum": 1}},
+        }), encoding="utf-8")
+        supervisor.host_owner_path.write_text(json.dumps({
+            "version": 1, "host_id": "test-host", "lease_id": "local-lease",
+            "engine_build_id": identity["build_id"],
+        }), encoding="utf-8")
+        os.environ["DEV_SUPERVISOR_HOST_ID"] = "test-host"
+        try:
+            with self.assertRaisesRegex(SupervisorError, "incompatible"):
+                supervisor.save_state(state)
+        finally:
+            os.environ.pop("DEV_SUPERVISOR_HOST_ID", None)
 
 
 class ColdStartTests(unittest.TestCase):

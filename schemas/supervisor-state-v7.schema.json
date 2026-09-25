@@ -11,6 +11,7 @@
     "current_plan_epoch_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
     "plan_epochs": {"type": "array", "minItems": 1, "items": {"$ref": "plan-epoch-v1.schema.json"}},
     "audit_events": {"type": "array", "items": {"$ref": "audit-event-v1.schema.json"}},
+    "engine_requirement": {"anyOf": [{"type": "null"}, {"$ref": "engine-binding-v2.schema.json#/$defs/identity"}]},
     "state_predecessor": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/predecessor"}]},
     "pending_push": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/pending_push"}]}
   },

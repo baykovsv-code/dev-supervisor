@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Host-local Development Supervisor writer ownership v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "host_id", "lease_id", "engine_build_id"],
+  "properties": {
+    "version": {"const": 1},
+    "host_id": {"type": "string", "pattern": "^[A-Za-z0-9._-]+$"},
+    "lease_id": {"type": "string", "pattern": "^[A-Za-z0-9._-]+$"},
+    "engine_build_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

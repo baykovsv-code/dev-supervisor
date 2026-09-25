@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Immutable Development Supervisor engine binding v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "engine_root", "identity", "compatibility"],
+  "properties": {
+    "version": {"const": 2},
+    "engine_root": {"type": "string"},
+    "identity": {"$ref": "#/$defs/identity"},
+    "compatibility": {"$ref": "#/$defs/compatibility"}
+  },
+  "$defs": {
+    "identity": {
+      "type": "object", "additionalProperties": false,
+      "required": ["revision", "build_id", "schema_version", "protocol_version"],
+      "properties": {
+        "revision": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+        "build_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "schema_version": {"type": "integer", "minimum": 1},
+        "protocol_version": {"type": "integer", "minimum": 1}
+      }
+    },
+    "range": {
+      "type": "object", "additionalProperties": false,
+      "required": ["minimum", "maximum"],
+      "properties": {
+        "minimum": {"type": "integer", "minimum": 1},
+        "maximum": {"type": "integer", "minimum": 1}
+      }
+    },
+    "compatibility": {
+      "type": "object", "additionalProperties": false,
+      "required": ["state", "policy", "protocol"],
+      "properties": {"state": {"$ref": "#/$defs/range"}, "policy": {"$ref": "#/$defs/range"}, "protocol": {"$ref": "#/$defs/range"}}
+    }
+  }
+}

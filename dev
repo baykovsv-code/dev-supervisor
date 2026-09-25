@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Lightweight launcher for an externally managed development supervisor."""
 
+import hashlib
 import json
 import os
 from pathlib import Path
 import runpy
+import subprocess
 import sys
 
 
@@ -15,8 +17,26 @@ if engine_override:
     engine_root = Path(engine_override).expanduser().resolve()
 else:
     try:
-        engine_root = Path(json.loads(binding_path.read_text(encoding="utf-8"))["engine_root"])
-    except (FileNotFoundError, KeyError, json.JSONDecodeError, TypeError) as error:
+        binding = json.loads(binding_path.read_text(encoding="utf-8"))
+        engine_root = Path(binding["engine_root"])
+        if binding.get("version") == 2:
+            identity = binding["identity"]
+            digest = hashlib.sha256()
+            for child in sorted(item for item in engine_root.rglob("*") if item.is_file()
+                                and ".git" not in item.relative_to(engine_root).parts
+                                and "__pycache__" not in item.relative_to(engine_root).parts
+                                and item.suffix != ".pyc"):
+                digest.update(child.relative_to(engine_root).as_posix().encode() + b"\0")
+                digest.update(child.read_bytes())
+            if digest.hexdigest() != identity["build_id"]:
+                raise ValueError("engine build digest does not match binding")
+            revision = subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=engine_root, text=True,
+                capture_output=True, check=True,
+            ).stdout.strip()
+            if revision != identity["revision"]:
+                raise ValueError("engine revision does not match binding")
+    except (FileNotFoundError, KeyError, json.JSONDecodeError, TypeError, ValueError, subprocess.CalledProcessError) as error:
         print(
             "dev supervisor: engine binding is missing; run the standalone supervisor init command "
             "or set DEV_SUPERVISOR_HOME",

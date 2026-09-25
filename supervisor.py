@@ -30,6 +30,11 @@ import uuid
 TOOL_DIR = Path(__file__).resolve().parent
 PROJECT_POLICY_NAME = "dev-supervisor.json"
 ENGINE_BINDING_NAME = "engine.json"
+ENGINE_BINDING_VERSION = 2
+ENGINE_PROTOCOL_VERSION = 1
+ENGINE_ARCHIVES_DIRECTORY = "engine-archives"
+ENGINE_UPDATE_NAME = "engine-update.json"
+HOST_OWNER_NAME = "host-owner.json"
 REPORT_FIELDS = {
     "role", "ticket", "status", "acceptance_passed", "tests_passed",
     "architecture_deviation", "ambiguity", "product_decision_required",
@@ -765,10 +770,12 @@ def project_launcher_text() -> str:
     return '''#!/usr/bin/env python3
 """Lightweight launcher for an externally managed development supervisor."""
 
+import hashlib
 import json
 import os
 from pathlib import Path
 import runpy
+import subprocess
 import sys
 
 
@@ -779,8 +786,29 @@ if engine_override:
     engine_root = Path(engine_override).expanduser().resolve()
 else:
     try:
-        engine_root = Path(json.loads(binding_path.read_text(encoding="utf-8"))["engine_root"])
-    except (FileNotFoundError, KeyError, json.JSONDecodeError, TypeError) as error:
+        binding = json.loads(binding_path.read_text(encoding="utf-8"))
+        engine_root = Path(binding["engine_root"])
+        # v1 path-only bindings deliberately remain readable for the T00
+        # compatibility/status path.  A v2 binding is an immutable receipt,
+        # not an instruction to trust whatever now happens to be at a path.
+        if binding.get("version") == 2:
+            identity = binding["identity"]
+            digest = hashlib.sha256()
+            for child in sorted(item for item in engine_root.rglob("*") if item.is_file()
+                                and ".git" not in item.relative_to(engine_root).parts
+                                and "__pycache__" not in item.relative_to(engine_root).parts
+                                and item.suffix != ".pyc"):
+                digest.update(child.relative_to(engine_root).as_posix().encode() + b"\\0")
+                digest.update(child.read_bytes())
+            if digest.hexdigest() != identity["build_id"]:
+                raise ValueError("engine build digest does not match binding")
+            revision = subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=engine_root, text=True,
+                capture_output=True, check=True,
+            ).stdout.strip()
+            if revision != identity["revision"]:
+                raise ValueError("engine revision does not match binding")
+    except (FileNotFoundError, KeyError, json.JSONDecodeError, TypeError, ValueError, subprocess.CalledProcessError) as error:
         print(
             "dev supervisor: engine binding is missing; run the standalone supervisor init command "
             "or set DEV_SUPERVISOR_HOME",
@@ -838,6 +866,8 @@ def initialize_repository(
         atomic_write_text(ignore_path, ignore + ("" if not ignore or ignore.endswith("\n") else "\n") + ".dev-supervisor/\n")
     runtime = root / ".dev-supervisor"
     runtime.mkdir(parents=True, exist_ok=True)
+    # Keep initialization compatible with the T00 launcher contract.  A v2
+    # receipt is created only by the explicit staged-update cutover below.
     atomic_write_json(runtime / ENGINE_BINDING_NAME, {"engine_root": str(TOOL_DIR)})
     supervisor = Supervisor(root, policy=policy)
     if cold_start:
@@ -1750,6 +1780,9 @@ class Supervisor:
         self.timing_path = self.runtime / "timing-history.json"
         self.stop_path = self.runtime / "stop-request.json"
         self.host_capabilities_path = self.runtime / HOST_CAPABILITIES_NAME
+        self.engine_binding_path = self.runtime / ENGINE_BINDING_NAME
+        self.host_owner_path = self.runtime / HOST_OWNER_NAME
+        self.engine_update_path = self.runtime / ENGINE_UPDATE_NAME
         self.host_capability_grants, self.host_capability_provenance, self.host_push_target = load_host_capability_grants(
             self.host_capabilities_path
         )
@@ -1860,6 +1893,200 @@ class Supervisor:
                 yield
             finally:
                 fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
+    def _engine_identity(self, root: Path) -> dict[str, Any]:
+        """Return a receipt for a clean immutable engine checkout."""
+        root = root.resolve()
+        git = GitRepo(root)
+        git.require_repository()
+        if not git.is_clean():
+            raise SupervisorError("staged engine checkout must be clean")
+        revision = git.head()
+        if not re.fullmatch(r"[0-9a-f]{40,64}", revision):
+            raise SupervisorError("staged engine revision is not immutable")
+        required = (root / "supervisor.py", root / "schemas", root / "tests")
+        if any(not path.exists() for path in required):
+            raise SupervisorError("staged engine is missing supervisor.py, schemas, or tests")
+        return {
+            "revision": revision,
+            "build_id": self._directory_digest(root),
+            "schema_version": STATE_VERSION,
+            "protocol_version": ENGINE_PROTOCOL_VERSION,
+        }
+
+    @staticmethod
+    def _compatibility_range(value: Any, *, name: str) -> tuple[int, int]:
+        if not isinstance(value, dict) or set(value) != {"minimum", "maximum"}:
+            raise SupervisorError(f"engine binding {name} compatibility range is malformed")
+        lower, upper = value["minimum"], value["maximum"]
+        if any(isinstance(item, bool) or not isinstance(item, int) or item < 1 for item in (lower, upper)) or lower > upper:
+            raise SupervisorError(f"engine binding {name} compatibility range is invalid")
+        return lower, upper
+
+    def _load_engine_binding(self) -> dict[str, Any]:
+        binding = read_json(self.engine_binding_path)
+        # The exact T00 shape remains a compatibility reader only.  It cannot
+        # establish mutable multi-host ownership and is never upgraded in place.
+        if set(binding) == {"engine_root"} and isinstance(binding["engine_root"], str):
+            return {"kind": "legacy", **binding}
+        required = {"version", "engine_root", "identity", "compatibility"}
+        if set(binding) != required or binding.get("version") != ENGINE_BINDING_VERSION:
+            raise SupervisorError("engine binding has an unsupported version or fields")
+        if not isinstance(binding["engine_root"], str) or not binding["engine_root"]:
+            raise SupervisorError("engine binding root is malformed")
+        identity = binding["identity"]
+        if not isinstance(identity, dict) or set(identity) != {"revision", "build_id", "schema_version", "protocol_version"}:
+            raise SupervisorError("engine binding identity is malformed")
+        if not re.fullmatch(r"[0-9a-f]{40,64}", str(identity["revision"])) or not re.fullmatch(r"[0-9a-f]{64}", str(identity["build_id"])):
+            raise SupervisorError("engine binding identity is not immutable")
+        if identity["schema_version"] != STATE_VERSION or identity["protocol_version"] != ENGINE_PROTOCOL_VERSION:
+            raise SupervisorError("engine binding names unsupported schema or protocol")
+        compatibility = binding["compatibility"]
+        if not isinstance(compatibility, dict) or set(compatibility) != {"state", "policy", "protocol"}:
+            raise SupervisorError("engine binding compatibility is malformed")
+        for name in ("state", "policy", "protocol"):
+            self._compatibility_range(compatibility[name], name=name)
+        return {"kind": "v2", **binding}
+
+    def _assert_engine_binding(self, state: dict[str, Any] | None = None) -> dict[str, Any]:
+        binding = self._load_engine_binding()
+        if binding["kind"] == "legacy":
+            return binding
+        if Path(binding["engine_root"]).expanduser().resolve() != self.assets_dir:
+            raise SupervisorError("active engine path does not match immutable binding")
+        actual = self._engine_identity(self.assets_dir)
+        if actual != binding["identity"]:
+            raise SupervisorError("active engine provenance or integrity does not match immutable binding")
+        current = state if state is not None else read_json(self.state_path)
+        version = current.get("version")
+        for name, value in (("state", version), ("policy", self.policy["version"]), ("protocol", ENGINE_PROTOCOL_VERSION)):
+            lower, upper = self._compatibility_range(binding["compatibility"][name], name=name)
+            if isinstance(value, bool) or not isinstance(value, int) or not lower <= value <= upper:
+                raise SupervisorError(f"active {name} version is incompatible with engine binding")
+        required = current.get("engine_requirement")
+        if required is not None and required != binding["identity"]:
+            raise SupervisorError("host engine is stale or incompatible with the required engine identity")
+        return binding
+
+    def _assert_writer_lease(self, binding: dict[str, Any]) -> None:
+        if binding["kind"] == "legacy":
+            return
+        owner = read_json(self.host_owner_path)
+        if set(owner) != {"version", "host_id", "lease_id", "engine_build_id"} or owner.get("version") != 1:
+            raise SupervisorError("host writer ownership is missing or malformed")
+        host_id = os.environ.get("DEV_SUPERVISOR_HOST_ID")
+        if not host_id or owner.get("host_id") != host_id:
+            raise SupervisorError("host-local writer ownership does not match DEV_SUPERVISOR_HOST_ID")
+        if not isinstance(owner.get("lease_id"), str) or not owner["lease_id"]:
+            raise SupervisorError("host writer lease is malformed")
+        if owner.get("engine_build_id") != binding["identity"]["build_id"]:
+            raise SupervisorError("host writer lease is for a different engine build")
+
+    def engine_update_dry_run(self, candidate: Path, *, run_tests: bool = True) -> dict[str, Any]:
+        """Qualify an isolated checkout without touching the active binding/state."""
+        candidate = candidate.expanduser().resolve()
+        if candidate == self.assets_dir:
+            raise SupervisorError("candidate engine must be staged outside the active controller")
+        identity = self._engine_identity(candidate)
+        state = self.load_state(read_only=True)
+        if state.get("version") != STATE_VERSION:
+            raise SupervisorError("engine update requires an explicitly migrated current state")
+        snapshot = self._product_snapshot()
+        tests: dict[str, Any] = {"ran": False, "passed": None}
+        if run_tests:
+            result = subprocess.run(
+                [sys.executable, "-m", "unittest", "discover", "-s", "tests"], cwd=candidate,
+                text=True, capture_output=True, timeout=120,
+            )
+            tests = {"ran": True, "passed": result.returncode == 0, "returncode": result.returncode,
+                     "output_digest": hashlib.sha256((result.stdout + result.stderr).encode()).hexdigest()}
+            if result.returncode:
+                raise SupervisorError("staged engine tests failed")
+        report = {
+            "version": 1, "status": "qualified", "candidate_root": str(candidate),
+            "identity": identity,
+            "compatibility": {"state": {"minimum": STATE_VERSION, "maximum": STATE_VERSION},
+                              "policy": {"minimum": self.policy["version"], "maximum": self.policy["version"]},
+                              "protocol": {"minimum": ENGINE_PROTOCOL_VERSION, "maximum": ENGINE_PROTOCOL_VERSION}},
+            "state_migration": {"status": "not_required", "writes_required": False,
+                                "source_version": state["version"]},
+            "product_snapshot": snapshot, "tests": tests,
+        }
+        return report
+
+    def _engine_update_is_quiescent(self, state: dict[str, Any]) -> None:
+        if state.get("active_run") is not None or state.get("pending_push") is not None:
+            raise SupervisorError("engine switch requires a quiescent state with no active or pending control")
+        if state.get("phase") not in TERMINAL_STATES:
+            raise SupervisorError("engine switch requires a quiescent terminal checkpoint")
+
+    def activate_engine_update(self, candidate: Path, *, go: bool) -> dict[str, Any]:
+        if not go:
+            raise SupervisorError("engine activation requires an explicit human go decision")
+        report = self.engine_update_dry_run(candidate)
+        state = self.load_state(read_only=True)
+        self._engine_update_is_quiescent(state)
+        proposed_binding = {"kind": "v2", "identity": report["identity"]}
+        # Ownership is checked before either archive or binding mutation.  A
+        # synchronized checkout without its operator-local lease therefore
+        # cannot even begin a cutover.
+        self._assert_writer_lease(proposed_binding)
+        before = self._product_snapshot()
+        binding = self._load_engine_binding()
+        archive = {"version": 1, "binding": binding, "state_checksum": content_checksum(state),
+                   "product_snapshot": before}
+        archive_path = self.runtime / ENGINE_ARCHIVES_DIRECTORY / (content_checksum(archive) + ".json")
+        if archive_path.exists():
+            raise SupervisorError("engine archive collision; refusing to overwrite rollback material")
+        # Archive is durable before the atomic binding replacement.  The staged
+        # directory is never copied or modified, so the active process cannot
+        # observe a partially updated tree.
+        atomic_write_json(archive_path, archive)
+        new_binding = {"version": ENGINE_BINDING_VERSION, "engine_root": report["candidate_root"],
+                       "identity": report["identity"], "compatibility": report["compatibility"]}
+        atomic_write_json(self.engine_binding_path, new_binding)
+        # Reconciliation is intentionally read-only: it proves that switching
+        # changed neither product HEAD/fingerprint nor the state snapshot.
+        if self._product_snapshot() != before or content_checksum(read_json(self.state_path)) != archive["state_checksum"]:
+            atomic_write_json(self.engine_binding_path, binding)
+            raise SupervisorError("post-switch read-only reconciliation failed; prior binding was restored")
+        updated = deepcopy(state)
+        updated["engine_requirement"] = report["identity"]
+        # This is the one handoff write performed by the retiring generation.
+        # It cannot use save_state because that deliberately refuses a process
+        # whose own code is no longer the newly bound generation.
+        updated["updated_at"] = isoformat(self.now())
+        atomic_write_json(self.state_path, updated)
+        result = {"status": "activated", "archive": str(archive_path.relative_to(self.runtime)),
+                  "identity": report["identity"], "product_snapshot": before}
+        atomic_write_json(self.engine_update_path, result)
+        return result
+
+    def rollback_engine_update(self) -> dict[str, Any]:
+        record = read_json(self.engine_update_path)
+        archive_ref = record.get("archive")
+        if not isinstance(archive_ref, str) or Path(archive_ref).is_absolute() or ".." in Path(archive_ref).parts:
+            raise SupervisorError("engine update rollback record is malformed")
+        archive = read_json(self.runtime / archive_ref)
+        state = self.load_state(read_only=True)
+        self._engine_update_is_quiescent(state)
+        before = self._product_snapshot()
+        current = self._assert_engine_binding(state)
+        self._assert_writer_lease(current)
+        prior = archive.get("binding")
+        if not isinstance(prior, dict) or state.get("engine_requirement") != current.get("identity"):
+            raise SupervisorError("engine rollback archive does not match current quiescent state")
+        atomic_write_json(self.engine_binding_path, prior)
+        restored = deepcopy(state)
+        restored.pop("engine_requirement", None)
+        restored["updated_at"] = isoformat(self.now())
+        atomic_write_json(self.state_path, restored)
+        if self._product_snapshot() != before:
+            atomic_write_json(self.engine_binding_path, current)
+            raise SupervisorError("rollback changed product state; active binding was restored")
+        result = {"status": "rolled_back", "archive": archive_ref, "product_snapshot": before}
+        atomic_write_json(self.engine_update_path, result)
+        return result
 
     @property
     def cold_start_path(self) -> Path:
@@ -2560,7 +2787,15 @@ class Supervisor:
     @staticmethod
     def _directory_digest(path: Path) -> str:
         digest = hashlib.sha256()
-        for child in sorted(item for item in path.rglob("*") if item.is_file()):
+        # Git metadata and Python bytecode are host/process by-products, never
+        # release material.  Including either would make an otherwise immutable
+        # checkout appear to change simply by inspecting or executing it.
+        for child in sorted(
+            item for item in path.rglob("*") if item.is_file()
+            and ".git" not in item.relative_to(path).parts
+            and "__pycache__" not in item.relative_to(path).parts
+            and item.suffix != ".pyc"
+        ):
             digest.update(child.relative_to(path).as_posix().encode() + b"\0")
             digest.update(child.read_bytes())
         return digest.hexdigest()
@@ -2884,6 +3119,13 @@ class Supervisor:
     def save_state(self, state: dict[str, Any]) -> None:
         if state.get("version") != STATE_VERSION:
             raise SupervisorError("legacy state is inspection-only; run state-migration-dry-run then state-migration-apply")
+        # The binding check is immediately before every ordinary state write.
+        # Thus a stale synchronized host fails closed before it can advance a
+        # state requiring a newer engine, and a v2 controller additionally
+        # needs host-local writer ownership (Git synchronization is no lease).
+        if self.engine_binding_path.exists():
+            binding = self._assert_engine_binding(state)
+            self._assert_writer_lease(binding)
         state["updated_at"] = isoformat(self.now())
         atomic_write_json(self.state_path, state)
 
@@ -8143,6 +8385,14 @@ def build_parser() -> argparse.ArgumentParser:
     state_migration = subparsers.add_parser(
         "state-migration-rollback", help="restore the checksummed predecessor state snapshot",
     )
+    engine_update = subparsers.add_parser("engine-update", help="qualify and quiescently activate an immutable engine checkout")
+    engine_update_sub = engine_update.add_subparsers(dest="engine_update_command", required=True)
+    engine_dry_run = engine_update_sub.add_parser("dry-run", help="qualify an isolated candidate without writes")
+    engine_dry_run.add_argument("--candidate", type=Path, required=True)
+    engine_activate = engine_update_sub.add_parser("activate", help="archive then atomically bind a qualified candidate")
+    engine_activate.add_argument("--candidate", type=Path, required=True)
+    engine_activate.add_argument("--go", action="store_true", help="record the explicit human go decision")
+    engine_update_sub.add_parser("rollback", help="restore the archived binding after stopping the new generation")
     subparsers.add_parser("status", help="show supervisor state and the current quota snapshot")
     subparsers.add_parser("run", help="run safe ticket progression until an explicit stop state")
     subparsers.add_parser("resume", help="resume only from a safely checkpointed state")
@@ -8356,6 +8606,17 @@ def main(arguments: list[str] | None = None) -> int:
                     result = supervisor.apply_state_migration()
                 else:
                     result = supervisor.rollback_state_migration()
+            print_json(result)
+            return 0
+        if args.command == "engine-update":
+            if args.engine_update_command == "dry-run":
+                print_json(supervisor.engine_update_dry_run(args.candidate))
+                return 0
+            with supervisor.operation_lock():
+                if args.engine_update_command == "activate":
+                    result = supervisor.activate_engine_update(args.candidate, go=args.go)
+                else:
+                    result = supervisor.rollback_engine_update()
             print_json(result)
             return 0
         if args.command == "status":
