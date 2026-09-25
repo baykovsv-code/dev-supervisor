@@ -3360,7 +3360,12 @@ class Supervisor:
             if phase == "DIAGNOSTIC_FAILED" and self._diagnostic_failed_recovery_error(state) is not None:
                 return ["operator must reconcile the failed diagnostic state; automatic resume is unavailable"]
             if phase == "SCOPE_BLOCKED" and self._scope_blocked_recovery_error(state) is not None:
-                return ["operator must reconcile the protected-scope checkpoint; automatic resume is unavailable"]
+                return ["operator must reconcile the scope checkpoint; automatic resume is unavailable"]
+            if phase == "GIT_BLOCKED" and self._protected_snapshot_recovery_error(state) is None:
+                return [
+                    "inspect the preserved protected-scope review evidence",
+                    "./dev recover-protected-snapshot",
+                ]
             if phase == "VERIFICATION_FAILED" and self._failed_host_verification(
                 state.get("active_run") or {}
             ) is None:
@@ -3989,21 +3994,27 @@ class Supervisor:
         }
 
     def _preserved_paths_match(self, checkpoint: dict[str, Any]) -> bool:
+        """Compare only product paths; Git fingerprint still covers control paths."""
         files = checkpoint.get("files")
         snapshot = checkpoint.get("product_snapshot")
-        if not isinstance(files, list) or not isinstance(snapshot, dict):
+        if (
+            not isinstance(files, list)
+            or files != sorted(set(files))
+            or not isinstance(snapshot, dict)
+        ):
             return False
+        product_files = [path for path in files if not self._is_supervisor_control_path(path)]
         expected = {
             item.get("path"): item
             for item in snapshot.get("entries", [])
-            if isinstance(item, dict) and item.get("path") in files
+            if isinstance(item, dict) and item.get("path") in product_files
         }
         current = {
             item.get("path"): item
             for item in self._product_snapshot().get("entries", [])
-            if isinstance(item, dict) and item.get("path") in files
+            if isinstance(item, dict) and item.get("path") in product_files
         }
-        return len(expected) == len(files) and current == expected
+        return len(expected) == len(product_files) and current == expected
 
     def _ensure_recovery_git(self, state: dict[str, Any]) -> str:
         context = state.get("recovery_context") or {}
@@ -6301,7 +6312,16 @@ class Supervisor:
                 path = candidate.strip().rstrip(".")
                 if path.startswith(("apps/", "adapters/", "docs/", "tests/")) and " " not in path:
                     result.append(path)
-        return result
+        documentation = re.search(
+            r"(?ms)^## Documentation impact\s*$\s*(`[^`]+`|[^\n]+)", text,
+        )
+        if documentation and documentation.group(1).strip().lstrip("`").startswith("Required"):
+            # Documentation governance requires behavior-changing tickets to
+            # update maintained operator material in the same ticket. Protected
+            # docs/architecture paths still pass through the earlier forbidden-
+            # path review.
+            result.append("docs/")
+        return list(dict.fromkeys(result))
 
     def _commit_message(self, state: dict[str, Any]) -> str:
         active = state["active_run"]
@@ -7085,12 +7105,9 @@ class Supervisor:
         """Enter read-only architecture review for one exact protected-path checkpoint."""
         error = self._scope_blocked_recovery_error(state)
         if error is not None:
-            self.transition(
-                state, "SCOPE_BLOCKED",
-                "Automatic protected-scope recovery is unavailable: " + error
-                + ". Operator reconciliation is required.",
-                scope_recovery_unavailable=error,
-            )
+            # SCOPE_BLOCKED has several unrelated causes. Resume is authorized
+            # only for the exact protected-path transition validated above; all
+            # other checkpoints remain byte-preserved for operator diagnosis.
             return state
         active = deepcopy(state["active_run"])
         protected_paths = self._protected_paths(active["changed_files"])
@@ -7432,6 +7449,178 @@ class Supervisor:
                 "failed_verification": failure,
             },
         )
+
+    def _protected_snapshot_recovery_error(self, state: dict[str, Any]) -> str | None:
+        """Validate the one legacy control-path product-snapshot false block.
+
+        This is intentionally narrower than protected-scope resume.  It accepts
+        only a completed read-only architecture PASS which the old product-path
+        count comparison rejected because a configured control path is omitted
+        from the product snapshot.  The complete Git fingerprint remains the
+        authority for those control-path bytes.
+        """
+        if state.get("phase") != "GIT_BLOCKED":
+            return "protected snapshot recovery requires the preserved GIT_BLOCKED checkpoint"
+        message = "Protected-scope architecture review was not read-only or its preserved implementation checkpoint is no longer exact."
+        history = state.get("history")
+        last = history[-1] if isinstance(history, list) and history else None
+        if (
+            state.get("message") != message
+            or not isinstance(last, dict)
+            or last.get("from") != "ARCHITECTURE_REVIEW"
+            or last.get("to") != "GIT_BLOCKED"
+            or last.get("message") != message
+        ):
+            return "the protected-scope false-block transition is missing or contradictory"
+
+        ticket = state.get("current_ticket")
+        review = state.get("active_run")
+        context = state.get("recovery_context")
+        if not isinstance(ticket, str) or not ticket or not isinstance(review, dict) or not isinstance(context, dict):
+            return "the ticket, completed architecture review, or recovery context is missing"
+        preserved = review.get("preserved_implementation_checkpoint")
+        if not isinstance(preserved, dict) or preserved.get("scope_review") is not True:
+            return "the protected implementation checkpoint is missing or not a scope review"
+        source = preserved.get("source_active")
+        protected_paths = preserved.get("protected_paths")
+        checkpoint_error = self._validated_protected_scope_checkpoint(state, source, protected_paths)
+        if checkpoint_error is not None:
+            return "the preserved implementation checkpoint is stale or contradictory: " + checkpoint_error
+        if (
+            context != preserved.get("recovery_context")
+            or context.get("kind") != "protected_scope_review"
+            or context.get("role") != "architecture"
+            or context.get("ticket") != ticket
+            or context.get("source_active") != source
+            or context.get("protected_paths") != protected_paths
+            or review.get("role") != "architecture"
+            or review.get("ticket") != ticket
+            or review.get("recovery") is not True
+            or review.get("starting_head") != source.get("starting_head")
+            or review.get("changed_files") != source.get("changed_files")
+            or review.get("role_changed_files") != []
+            or review.get("post_invocation_fingerprint") != source.get("post_invocation_fingerprint")
+            or self.git.head() != source.get("starting_head")
+            or self.git.branch() != self.policy["expected_branch"]
+            or self.git.fingerprint() != source.get("post_invocation_fingerprint")
+            or not self._model_checkpoint_matches(review)
+        ):
+            return "the completed read-only architecture review is stale, cross-ticket, or altered"
+
+        report = review.get("report")
+        if (
+            validate_report(report, "architecture", ticket)
+            or report.get("status") != "pass"
+            or any(report.get(field) is not True for field in ("acceptance_passed", "tests_passed", "next_ticket_safe"))
+            or any(report.get(field) is not False for field in ("architecture_deviation", "ambiguity", "product_decision_required"))
+            or report.get("files_changed") != []
+        ):
+            return "the completed architecture report is not the exact read-only protected-scope approval"
+
+        source_files = source.get("changed_files")
+        if (
+            not isinstance(source_files, list)
+            or source_files != preserved.get("files")
+            or source_files != context.get("preserved_files")
+            or not any(self._is_supervisor_control_path(path) for path in source_files)
+            or preserved.get("product_snapshot") != self._product_snapshot()
+            or not self._preserved_paths_match(preserved)
+        ):
+            return "the checkpoint is not the configured control-path product-snapshot count mismatch"
+
+        source_run_id = source.get("id")
+        if not isinstance(source_run_id, str) or not source_run_id or Path(source_run_id).name != source_run_id:
+            return "the preserved implementation run identity is malformed"
+        source_dir = self.runs_dir / source_run_id
+        source_artifacts = [
+            source_dir / "invocation.json", source_dir / "final-report.json",
+            source_dir / "checks.json", source_dir / "changed-files.json",
+            source_dir / "usage.json", source_dir / "check-git-diff.log",
+        ]
+        try:
+            if any(not stat.S_ISREG(path.lstat().st_mode) for path in source_artifacts):
+                return "the preserved implementation artifacts are unsafe"
+            source_invocation = read_json(source_dir / "invocation.json")
+            source_report = read_json(source_dir / "final-report.json")
+            source_checks = json.loads((source_dir / "checks.json").read_text(encoding="utf-8"))
+            source_changed = json.loads((source_dir / "changed-files.json").read_text(encoding="utf-8"))
+            source_usage = read_json(source_dir / "usage.json")
+        except (SupervisorError, OSError, json.JSONDecodeError):
+            return "the preserved implementation artifacts are unavailable or malformed"
+        if (
+            source_invocation.get("completed") is not True
+            or source_invocation.get("exit_status") != 0
+            or source_invocation.get("rate_limited") is not False
+            or source_report != source.get("report")
+            or source_checks != source.get("verification_results")
+            or source_changed != source_files
+            or source_usage != source.get("usage")
+        ):
+            return "the preserved implementation artifacts contradict the checkpoint"
+
+        run_id = review.get("id")
+        authorization = review.get("quota_authorization")
+        consumptions = state.get("quota_consumptions")
+        if (
+            not isinstance(run_id, str)
+            or not run_id
+            or Path(run_id).name != run_id
+            or not isinstance(authorization, dict)
+            or authorization.get("status") != "consumed"
+            or authorization.get("invocation_id") != run_id
+            or authorization.get("role") != "architecture"
+            or authorization.get("ticket") != ticket
+            or authorization.get("recovery") is not True
+            or not isinstance(consumptions, list)
+            or sum(item == authorization for item in consumptions) != 1
+        ):
+            return "the completed architecture review quota audit is missing or contradictory"
+        run_dir = self.runs_dir / run_id
+        try:
+            review_artifacts = [
+                run_dir / "invocation.json", run_dir / "final-report.json",
+                run_dir / "changed-files.json", run_dir / "usage.json", run_dir / "diff-summary.txt",
+            ]
+            if any(not stat.S_ISREG(path.lstat().st_mode) for path in review_artifacts):
+                return "the completed architecture review artifacts are unsafe"
+            invocation = read_json(run_dir / "invocation.json")
+            durable_report = read_json(run_dir / "final-report.json")
+            durable_files = json.loads((run_dir / "changed-files.json").read_text(encoding="utf-8"))
+            durable_usage = read_json(run_dir / "usage.json")
+        except (SupervisorError, OSError, json.JSONDecodeError):
+            return "the completed architecture review artifacts are unavailable or malformed"
+        if (
+            invocation.get("completed") is not True
+            or invocation.get("exit_status") != 0
+            or invocation.get("rate_limited") is not False
+            or durable_report != report
+            or durable_files != source_files
+            or durable_usage != review.get("usage")
+        ):
+            return "the completed architecture review artifacts contradict the preserved checkpoint"
+        return None
+
+    def recover_protected_snapshot(self) -> dict[str, Any]:
+        """Reprocess exactly one legacy control-path snapshot false block."""
+        state = self.load_state()
+        error = self._protected_snapshot_recovery_error(state)
+        if error is not None:
+            raise SupervisorError("protected snapshot recovery is unavailable: " + error)
+        review = state["active_run"]
+        preserved = review["preserved_implementation_checkpoint"]
+        evidence = {
+            "ticket": state["current_ticket"], "review_run_id": review["id"],
+            "implementation_run_id": preserved["source_run_id"],
+            "head": self.git.head(), "branch": self.git.branch(),
+            "files": list(preserved["files"]),
+            "product_snapshot": deepcopy(preserved["product_snapshot"]),
+            "fingerprint": self.git.fingerprint(),
+            "architecture_report": deepcopy(review["report"]),
+            "architecture_quota_authorization": deepcopy(review["quota_authorization"]),
+        }
+        self._append_audit_event(state, "protected_snapshot_recovery", evidence)
+        self._process_protected_scope_review(state)
+        return state
 
     def _generic_verification_failure_checkpoint(
         self, state: dict[str, Any], *, require_phase: bool = True,
@@ -8409,6 +8598,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="validate and explicitly open one preserved generic verification failure for bounded repair",
     )
     subparsers.add_parser(
+        "recover-protected-snapshot",
+        help="reprocess one exact legacy protected-scope control-path snapshot false block without a model call",
+    )
+    subparsers.add_parser(
         "reconcile-verification-evidence",
         help="re-evaluate one recorded exit-zero host check with the current deterministic evidence policy",
     )
@@ -8675,6 +8868,8 @@ def main(arguments: list[str] | None = None) -> int:
                 state = supervisor.recover_verification_failure()
             elif args.command == "recover-generic-verification-failure":
                 state = supervisor.recover_generic_verification_failure()
+            elif args.command == "recover-protected-snapshot":
+                state = supervisor.recover_protected_snapshot()
             elif args.command == "reconcile-verification-evidence":
                 state = supervisor.reconcile_verification_evidence()
             else:

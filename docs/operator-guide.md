@@ -123,6 +123,19 @@ full verification suite and ordinary scope and commit gates. Missing, altered, s
 or ambiguous evidence fails closed; mandatory host verification follows its stricter
 handling.
 
+For the historical protected-scope snapshot count defect only, use
+`./dev recover-protected-snapshot`. It can reprocess a completed, read-only
+protected-scope architecture PASS only when the durable checkpoint proves that a
+configured supervisor-control path caused the old product-snapshot count mismatch.
+It verifies the exact ticket, implementation and review runs, HEAD, branch, dirty
+path set and bytes, structured report, run artifacts, quota audit, product snapshot,
+and complete Git fingerprint. It invokes no model and consumes no quota, then returns
+the original review to the ordinary scope and commit gates. Any missing, ambiguous,
+stale, changed, or non-qualifying evidence fails closed without changing the
+preserved checkpoint. This command is not a general override or evidence waiver.
+Likewise, `resume` leaves unrelated `SCOPE_BLOCKED` checkpoints unchanged so their
+original reason and evidence remain available for operator reconciliation.
+
 An engine update uses a separately staged immutable identity with compatible
 configuration/state/protocol ranges. Verify, dry-run migration, and test it away from
 the active controller; archive and switch only at quiescence; then reconcile

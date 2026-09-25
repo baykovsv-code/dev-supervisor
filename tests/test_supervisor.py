@@ -866,12 +866,13 @@ class SupervisorTests(unittest.TestCase):
         supervisor, runner, state, protected = self.protected_scope_checkpoint()
         quota_before = (self.root / ".dev-supervisor/quota.json").read_bytes()
         (self.root / protected).write_text("operator mutation\n", encoding="utf-8")
+        state_before = (self.root / ".dev-supervisor/state.json").read_bytes()
 
         self.assertIsNone(supervisor.advertised_resume_command(state))
         refused = supervisor.resume()
 
         self.assertEqual(refused["phase"], "SCOPE_BLOCKED")
-        self.assertIn("Operator reconciliation is required", refused["message"])
+        self.assertEqual((self.root / ".dev-supervisor/state.json").read_bytes(), state_before)
         self.assertIsNone(supervisor.advertised_resume_command(refused))
         self.assertEqual(runner.calls, [("implementation", "T10")])
         self.assertEqual((self.root / ".dev-supervisor/quota.json").read_bytes(), quota_before)
@@ -880,12 +881,13 @@ class SupervisorTests(unittest.TestCase):
         supervisor, runner, state, _ = self.protected_scope_checkpoint()
         state["active_run"].pop("verification_results")
         supervisor.save_state(state)
+        state_before = (self.root / ".dev-supervisor/state.json").read_bytes()
 
         self.assertIsNone(supervisor.advertised_resume_command(state))
         refused = supervisor.resume()
 
         self.assertEqual(refused["phase"], "SCOPE_BLOCKED")
-        self.assertIn("Operator reconciliation is required", refused["message"])
+        self.assertEqual((self.root / ".dev-supervisor/state.json").read_bytes(), state_before)
         self.assertIsNone(supervisor.advertised_resume_command(refused))
         self.assertEqual(runner.calls, [("implementation", "T10")])
 
@@ -907,6 +909,139 @@ class SupervisorTests(unittest.TestCase):
         self.assertIn("do not exactly match", state["message"])
         self.assertIsNone(supervisor.advertised_resume_command(state))
         self.assertIn("operator must reconcile", supervisor._next_actions(state)[0])
+
+        state_before = (self.root / ".dev-supervisor/state.json").read_bytes()
+        refused = supervisor.resume()
+
+        self.assertEqual((refused["phase"], refused["message"]), (state["phase"], state["message"]))
+        self.assertEqual((self.root / ".dev-supervisor/state.json").read_bytes(), state_before)
+
+    def test_required_documentation_impact_is_current_ticket_scope(self):
+        (self.root / "docs/architecture/implementation-plan.md").write_text(
+            "| Milestone | Tickets | Gate |\n"
+            "|---|---|---|\n"
+            "| 4 upgrades | F11 → 12 | cutover |\n",
+            encoding="utf-8",
+        )
+        (self.root / "docs/architecture/tickets/f11-recovery.md").write_text(
+            "# F11\n\n- Files/modules: `supervisor.py`, `tests/`.\n\n"
+            "## Documentation impact\n\n"
+            "`Required — recovery workflow.` Update maintained operator documentation.\n",
+            encoding="utf-8",
+        )
+        (self.root / "docs/architecture/tickets/12-qualification.md").write_text(
+            "# T12\n\n- Files/modules: `tests/`, `docs/`.\n\n"
+            "## Documentation impact\n\n`Required — runbook.`\n",
+            encoding="utf-8",
+        )
+        supervisor = self.make_supervisor()
+
+        self.assertIn("docs/", supervisor._ticket_owned_paths("F11"))
+        self.assertNotIn(("docs/", "T12"), supervisor._later_ticket_owned_paths("F11"))
+
+    def protected_snapshot_false_block_checkpoint(self):
+        """Build the exact persisted state produced by the pre-F11 count defect."""
+        policy = deepcopy(self.policy)
+        control = "control/review-marker.txt"
+        policy["supervisor_control_paths"].append("control/")
+        policy["implementation_forbidden_paths"].append("control/")
+
+        def implementation(role, ticket, run_dir):
+            architecture = self.root / "docs/architecture/ticket-contract.md"
+            architecture.write_text("protected architecture delta\n", encoding="utf-8")
+            marker = self.root / control
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text("controller evidence\n", encoding="utf-8")
+            return InvocationResult(0, report("implementation", ticket, files=[control, str(architecture.relative_to(self.root))]), {})
+
+        runner = FakeModelRunner([implementation, lambda role, ticket, run_dir: InvocationResult(0, report(role, ticket), {})])
+        supervisor = self.make_supervisor(runner, policy=policy)
+        self.set_quota(supervisor)
+        state = supervisor.run()
+        self.assertEqual(state["phase"], "SCOPE_BLOCKED")
+        supervisor.resume()
+        self.set_quota(supervisor)
+        state = supervisor.load_state()
+        # Preserve the completed review immediately before its historical
+        # count-based rejection; normal F11 behavior would now reprocess it.
+        with patch.object(supervisor, "_process_protected_scope_review"):
+            supervisor._invoke(state, "architecture", supervisor.quota.snapshot()["observation_id"], recovery=True)
+        self.assertEqual(state["phase"], "ARCHITECTURE_REVIEW")
+
+        # F11 fixes the comparison.  Preserve the exact terminal state that the
+        # prior count-based implementation had already written before this fix.
+        message = "Protected-scope architecture review was not read-only or its preserved implementation checkpoint is no longer exact."
+        state["phase"] = "GIT_BLOCKED"
+        state["message"] = message
+        state["history"].append({"at": NOW.isoformat(), "from": "ARCHITECTURE_REVIEW", "to": "GIT_BLOCKED", "message": message})
+        supervisor.save_state(state)
+        return supervisor, runner, state, control
+
+    def test_protected_snapshot_recovery_reprocesses_exact_legacy_false_block_without_model_or_quota(self):
+        supervisor, runner, state, control = self.protected_snapshot_false_block_checkpoint()
+        quota_before = (self.root / ".dev-supervisor/quota.json").read_bytes()
+        report_before = deepcopy(state["active_run"]["report"])
+        source = state["active_run"]["preserved_implementation_checkpoint"]["source_active"]
+
+        recovered = supervisor.recover_protected_snapshot()
+
+        self.assertEqual(recovered["phase"], "SCOPE_PENDING")
+        self.assertEqual(runner.calls, [("implementation", "T10"), ("architecture", "T10")])
+        self.assertEqual((self.root / ".dev-supervisor/quota.json").read_bytes(), quota_before)
+        self.assertEqual(recovered["active_run"]["report"], source["report"])
+        self.assertEqual(recovered["active_run"]["protected_scope_authorization"]["architecture_report"], report_before)
+        self.assertIn(control, recovered["active_run"]["changed_files"])
+        events = [event for event in recovered["audit_events"] if event["kind"] == "protected_snapshot_recovery"]
+        self.assertEqual(len(events), 1)
+
+    def test_protected_snapshot_recovery_rejects_changed_or_ambiguous_evidence_without_mutation(self):
+        def change_ticket(supervisor, state, control):
+            state["current_ticket"] = "T11"
+
+        def change_run(supervisor, state, control):
+            state["active_run"]["id"] = "other-run"
+
+        def change_branch(supervisor, state, control):
+            git(self.root, "checkout", "-b", "stale-protected-snapshot")
+
+        def change_dirty_paths(supervisor, state, control):
+            (self.root / "unexpected.txt").write_text("unexpected\n", encoding="utf-8")
+
+        def change_dirty_bytes(supervisor, state, control):
+            (self.root / "docs/architecture/ticket-contract.md").write_text("altered\n", encoding="utf-8")
+
+        def change_report(supervisor, state, control):
+            state["active_run"]["report"]["summary"] = "altered"
+
+        def change_artifact(supervisor, state, control):
+            run_id = state["active_run"]["id"]
+            (supervisor.runs_dir / run_id / "final-report.json").write_text("{}", encoding="utf-8")
+
+        def change_quota_audit(supervisor, state, control):
+            state["quota_consumptions"].pop()
+
+        def change_fingerprint(supervisor, state, control):
+            state["active_run"]["preserved_implementation_checkpoint"]["source_active"]["post_invocation_fingerprint"] = "0" * 64
+
+        cases = {
+            "ticket": change_ticket, "run": change_run, "branch": change_branch,
+            "dirty paths": change_dirty_paths, "dirty bytes": change_dirty_bytes,
+            "report": change_report, "artifact": change_artifact,
+            "quota audit": change_quota_audit, "fingerprint": change_fingerprint,
+        }
+        for index, (name, mutate) in enumerate(cases.items()):
+            with self.subTest(name=name):
+                if index:
+                    self.tearDown()
+                    self.setUp()
+                supervisor, runner, state, control = self.protected_snapshot_false_block_checkpoint()
+                mutate(supervisor, state, control)
+                supervisor.save_state(state)
+                before = (self.root / ".dev-supervisor/state.json").read_bytes()
+                with self.assertRaisesRegex(SupervisorError, "protected snapshot recovery is unavailable"):
+                    supervisor.recover_protected_snapshot()
+                self.assertEqual((self.root / ".dev-supervisor/state.json").read_bytes(), before)
+                self.assertEqual(runner.calls, [("implementation", "T10"), ("architecture", "T10")])
 
     def test_unknown_quota_blocks_invocation(self):
         runner = FakeModelRunner([])

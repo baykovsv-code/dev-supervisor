@@ -73,6 +73,20 @@ model checkpoint, ровно один текущий failed check и durable log
 commit gates. Host-verification handling строже. Missing, stale или altered evidence
 останавливает процесс.
 
+Только для исторического дефекта count в protected-scope snapshot используйте
+`./dev recover-protected-snapshot`. Команда может повторно обработать завершённый
+read-only architecture PASS, лишь когда durable checkpoint доказывает, что
+настроенный supervisor-control path вызвал старое несовпадение count product snapshot.
+Она сверяет точные ticket, implementation и review run, HEAD, branch, набор и bytes
+dirty paths, structured report, run artifacts, quota audit, product snapshot и полный
+Git fingerprint. Она не вызывает model и не расходует quota, после чего возвращает
+исходный review к обычным scope и commit gates. Missing, ambiguous, stale, changed
+или не подходящее evidence fail closed без изменения preserved checkpoint. Это не
+general override и не waiver evidence.
+Также `resume` не изменяет не связанные с protected-scope checkpoints
+`SCOPE_BLOCKED`, чтобы их исходные reason и evidence сохранялись для operator
+reconciliation.
+
 Engine update загружает successor отдельно, проверяет immutable identity и compatible
 state/config/protocol, выполняет dry-run и tests, затем переключается только в
 quiescent checkpoint после archive и read-only reconciliation. Rollback сначала
