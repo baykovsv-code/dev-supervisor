@@ -10,9 +10,12 @@ legacy repository at commit `854083f51c9aedf33ec2d9654fc67aacff84af8a`.
 
 ## Supervisor 2.1 candidates
 
-- [Restricted-workplace macOS qualification](docs/backlog/macos-platform-qualification-2.1.md)
-  is deliberately deferred until Supervisor 2.0 controls its own successor
-  development. It is not a prerequisite for the initial Linux-hosted 2.0 cutover.
+- [Supervisor 2.1 development candidate](docs/backlog/supervisor-2.1.md) consolidates
+  the approved post-2.0 documentation, quota, neutral compatibility, self-hosted
+  acceptance, and platform scope.
+- [macOS qualification](docs/backlog/macos-platform-qualification-2.1.md) is deferred:
+  2.1 may add deterministic portability coverage, but it will not be checked on a real
+  Mac and will not claim macOS support.
 
 ## Safety clarification
 

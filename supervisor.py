@@ -2170,7 +2170,32 @@ class Supervisor:
         gate = state.get("gate")
         if not isinstance(gate, dict) or gate.get("ticket") != state.get("current_ticket"):
             raise SupervisorError("legacy HUMAN_GATE ownership is missing or ambiguous")
-        if gate.get("head") != self.git.head() or gate.get("fingerprint") != self.git.fingerprint():
+        actual_head = self.git.head()
+        actual_fingerprint = self.git.fingerprint()
+        recorded_fingerprint = gate.get("fingerprint")
+        history = state.get("history")
+        last_transition = history[-1] if isinstance(history, list) and history else None
+        exact_clean_milestone_without_fingerprint = (
+            recorded_fingerprint is None
+            and self.git.is_clean()
+            and actual_fingerprint == hashlib.sha256(b"").hexdigest()
+            and set(gate) == {"head", "kind", "name", "ticket"}
+            and gate.get("kind") == "milestone"
+            and isinstance(gate.get("name"), str)
+            and bool(gate["name"].strip())
+            and state.get("last_commit") == actual_head
+            and isinstance(last_transition, dict)
+            and last_transition.get("from") == "COMMITTING"
+            and last_transition.get("to") == "HUMAN_GATE"
+            and last_transition.get("message") == state.get("message")
+        )
+        if (
+            gate.get("head") != actual_head
+            or (
+                recorded_fingerprint != actual_fingerprint
+                and not exact_clean_milestone_without_fingerprint
+            )
+        ):
             raise SupervisorError("legacy dirty state is unsupported because its preserved gate fingerprint disagrees")
         if not isinstance(state.get("current_ticket"), str) or not isinstance(state.get("completed_tickets"), list):
             raise SupervisorError("legacy source ticket lineage is malformed or ambiguous")
@@ -2299,6 +2324,10 @@ class Supervisor:
 
     def rollback_legacy_cutover(self) -> dict[str, Any]:
         record = read_json(self.legacy_cutover_path)
+        if record.get("status") != "cutover_applied":
+            raise SupervisorError(
+                "legacy rollback is closed after cutover acceptance; preserve the predecessor archive for explicit recovery"
+            )
         archive_ref = record.get("archive")
         if not isinstance(archive_ref, str) or Path(archive_ref).is_absolute() or ".." in Path(archive_ref).parts:
             raise SupervisorError("legacy cutover rollback record is malformed")
@@ -2307,6 +2336,8 @@ class Supervisor:
             raise SupervisorError("legacy cutover predecessor archive is missing or inconsistent")
         state = self.load_state(read_only=True)
         self._engine_update_is_quiescent(state)
+        if state.get("phase") != "HUMAN_GATE" or self._current_epoch(state).get("completion") is not None:
+            raise SupervisorError("legacy rollback is closed after cutover acceptance")
         current = self._assert_engine_binding(state)
         self._assert_writer_lease(current)
         before = self._product_snapshot()
@@ -2319,6 +2350,107 @@ class Supervisor:
         result = {"status": "rolled_back", "archive": archive_ref, "product_snapshot": before}
         atomic_write_json(self.legacy_cutover_path, result)
         return result
+
+    def accept_legacy_cutover(self, note: str) -> dict[str, Any]:
+        """Close an exact migrated sentinel after the new generation was accepted.
+
+        This is deliberately narrower than a general state override: it applies only
+        to the quiescent HUMAN_GATE produced by the qualified 1.x cutover, preserves
+        the predecessor archive, and never invokes a model or creates a Git commit.
+        """
+        note = note.strip()
+        if not note or len(note) > 2000:
+            raise SupervisorError("cutover acceptance note must contain 1 to 2000 characters")
+        state = self.load_state()
+        if state.get("version") != STATE_VERSION or state.get("phase") not in {"HUMAN_GATE", "PLAN_COMPLETED"}:
+            raise SupervisorError("cutover acceptance requires the exact quiescent final milestone sentinel")
+        epoch = self._current_epoch(state)
+        existing_completion = epoch.get("completion")
+        record = read_json(self.legacy_cutover_path)
+        if (
+            state.get("phase") == "PLAN_COMPLETED"
+            and isinstance(existing_completion, dict)
+            and existing_completion.get("reason") == "qualified legacy cutover accepted by the operator"
+        ):
+            if record.get("status") == "cutover_accepted" and record.get("acceptance") == existing_completion:
+                return state
+            if (
+                record.get("status") == "cutover_applied"
+                and record.get("source_checksum") == existing_completion.get("cutover_checksum")
+                and record.get("archive") == existing_completion.get("archive")
+            ):
+                event = next(
+                    (item for item in state.get("audit_events", [])
+                     if item.get("kind") == "legacy_cutover_accepted"
+                     and item.get("payload") == existing_completion),
+                    None,
+                )
+                if event is None:
+                    raise SupervisorError("accepted cutover state lacks its audit event")
+                atomic_write_json(self.legacy_cutover_path, {
+                    **record, "status": "cutover_accepted", "acceptance": existing_completion,
+                    "audit_event_id": event["event_id"],
+                })
+                return state
+            raise SupervisorError("accepted cutover state contradicts its durable cutover record")
+        ticket = state.get("current_ticket")
+        gate = state.get("gate")
+        if (
+            state.get("version") != STATE_VERSION
+            or state.get("phase") != "HUMAN_GATE"
+            or not isinstance(gate, dict)
+            or gate.get("kind") != "milestone"
+            or gate.get("ticket") != ticket
+            or state.get("active_run") is not None
+            or state.get("pending_commit") is not None
+            or state.get("starting_head") is not None
+        ):
+            raise SupervisorError("cutover acceptance requires the exact quiescent final milestone sentinel")
+        if ticket != epoch["tickets"][-1]:
+            raise SupervisorError("cutover acceptance requires the exact quiescent final milestone sentinel")
+        expected_completed = epoch["tickets"][:-1]
+        if state.get("completed_tickets") != expected_completed:
+            raise SupervisorError("cutover acceptance requires the exact completed predecessor ticket prefix")
+        if gate.get("head") != self.git.head():
+            raise SupervisorError("cutover acceptance gate no longer matches product HEAD")
+        cutover = state.get("legacy_cutover")
+        if (
+            not isinstance(cutover, dict)
+            or cutover.get("version") != 1
+            or record.get("status") != "cutover_applied"
+            or record.get("source_checksum") != cutover.get("checksum")
+            or record.get("archive") != cutover.get("archive")
+        ):
+            raise SupervisorError("cutover acceptance lacks the exact applied predecessor record")
+        archive = read_json(self.runtime / cutover["archive"])
+        if (
+            archive.get("kind") != "qualified_1x_predecessor"
+            or content_checksum(archive) != cutover["checksum"]
+        ):
+            raise SupervisorError("cutover acceptance predecessor archive is missing or inconsistent")
+        self._assert_engine_binding(state)
+        evidence = {
+            "commit": gate["head"],
+            "ticket": ticket,
+            "reason": "qualified legacy cutover accepted by the operator",
+            "cutover_checksum": cutover["checksum"],
+            "archive": cutover["archive"],
+            "note": note,
+        }
+        epoch["completion"] = evidence
+        state["completed_tickets"].append(ticket)
+        event = self._append_audit_event(state, "legacy_cutover_accepted", evidence)
+        self.transition(
+            state, "PLAN_COMPLETED",
+            f"Legacy plan epoch {epoch['epoch_id']} closed after accepted cutover; new work requires a separately approved epoch.",
+            gate=None, active_run=None, pending_commit=None, starting_head=None,
+            completion_reason=evidence["reason"], final_result=evidence,
+        )
+        atomic_write_json(self.legacy_cutover_path, {
+            **record, "status": "cutover_accepted", "acceptance": evidence,
+            "audit_event_id": event["event_id"],
+        })
+        return state
 
     @property
     def cold_start_path(self) -> Path:
@@ -8873,6 +9005,11 @@ def build_parser() -> argparse.ArgumentParser:
     gate_sub = gate.add_subparsers(dest="gate_command", required=True)
     release = gate_sub.add_parser("release", help="release the current gate after human review")
     release.add_argument("--note", required=True)
+    accept_cutover = gate_sub.add_parser(
+        "accept-cutover",
+        help="accept an exact qualified legacy cutover and close its non-executable final sentinel",
+    )
+    accept_cutover.add_argument("--note", required=True)
     reconcile = gate_sub.add_parser(
         "reconcile-plan",
         help="reconcile a closed milestone or durable periodic gate with authoritative planning",
@@ -9117,7 +9254,9 @@ def main(arguments: list[str] | None = None) -> int:
             return 0
         with supervisor.operation_lock():
             if args.command == "gate":
-                if args.gate_command == "reconcile-plan":
+                if args.gate_command == "accept-cutover":
+                    state = supervisor.accept_legacy_cutover(args.note)
+                elif args.gate_command == "reconcile-plan":
                     state = supervisor.reconcile_plan_gate(args.note)
                 elif args.gate_command == "adopt-architecture":
                     state = supervisor.adopt_external_architecture(args.note)

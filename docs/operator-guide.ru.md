@@ -138,6 +138,14 @@ Source engine должен быть clean на exact revision. Единстве�
 4. Для go: `./dev legacy-cutover apply --candidate <2.0-engine> --source-checksum
    <receipt> --go`; затем используйте только read-only `./dev status` и запишите решение.
 
+Если новое поколение 2.0 активировано, его read-only status проверен и результат
+принят, один раз выполните `./dev gate accept-cutover --note "..."`. Команда проверяет
+cutover record, predecessor archive, binding, полный префикс завершённых тикетов,
+финальный gate и HEAD. Она не вызывает модель и не создаёт commit. После принятия
+прямой rollback в legacy 1.x закрывается, но checksummed archive сохраняется для
+явного восстановления; новая разработка всё равно требует отдельного утверждённого
+plan epoch.
+
 Archive `.dev-supervisor/legacy-cutover-archives/` сохраняется и содержит checksummed
 engine receipt/revision, binding, policy, state, quota ledger, run artifacts, Git
 HEAD/branch/fingerprint/product snapshot и observed lock authority. Конверсия quota

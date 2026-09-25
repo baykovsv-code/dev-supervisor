@@ -213,6 +213,14 @@ Before every run:
 Do not run T99. The milestone after T12 is the final human cutover gate and must not be
 released under Supervisor 1.x.
 
+After the qualified 2.0 generation has been activated and its read-only status has
+been accepted, close the migrated non-executable sentinel exactly once with
+`./dev gate accept-cutover --note "..."`. This command verifies the applied cutover,
+predecessor archive, engine binding, final ticket prefix, gate, and product HEAD. It
+invokes no model and creates no commit. Acceptance closes direct legacy rollback;
+the checksummed predecessor archive remains preserved for explicit recovery, and new
+development still requires a separately approved plan epoch.
+
 ## Periodic checkpoints between tickets
 
 Supervisor can stop between completed tickets when a configured periodic threshold is

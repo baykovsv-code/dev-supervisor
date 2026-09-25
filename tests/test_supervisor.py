@@ -4355,7 +4355,11 @@ class LegacyCutoverTests(unittest.TestCase):
         state = {
             "version": 4, "phase": "HUMAN_GATE", "current_ticket": "T30", "completed_tickets": [],
             "active_run": None, "pending_commit": None,
-            "gate": {"ticket": "T30", "head": supervisor.git.head(), "fingerprint": supervisor.git.fingerprint()},
+            "gate": {
+                "ticket": "T30", "head": supervisor.git.head(),
+                "fingerprint": supervisor.git.fingerprint(), "kind": "milestone",
+                "name": "Supervisor 2.0 cutover approval",
+            },
             "updated_at": "2026-09-20T12:00:00Z",
         }
         (runtime / "state.json").write_text(json.dumps(state), encoding="utf-8")
@@ -4413,6 +4417,75 @@ class LegacyCutoverTests(unittest.TestCase):
         supervisor.state_path.write_text(json.dumps(state), encoding="utf-8")
         with self.assertRaisesRegex(SupervisorError, "dirty state is unsupported"):
             supervisor.legacy_cutover_dry_run(candidate)
+
+    def test_exact_clean_legacy_milestone_without_historical_fingerprint_is_supported(self):
+        legacy, candidate = self._engine("legacy"), self._engine("candidate")
+        supervisor = self._legacy_runtime(legacy)
+        git(self.root, "add", ".")
+        git(self.root, "commit", "-m", "Prepare clean legacy milestone")
+        state = json.loads(supervisor.state_path.read_text(encoding="utf-8"))
+        message = "Qualification is complete; activate one immutable successor."
+        state.update({
+            "last_commit": supervisor.git.head(),
+            "message": message,
+            "gate": {
+                "head": supervisor.git.head(), "kind": "milestone",
+                "name": "Supervisor 2.0 cutover approval", "ticket": "T30",
+            },
+            "history": [{
+                "at": NOW.isoformat(), "from": "COMMITTING",
+                "to": "HUMAN_GATE", "message": message,
+            }],
+        })
+        supervisor.state_path.write_text(json.dumps(state), encoding="utf-8")
+
+        report = supervisor.legacy_cutover_dry_run(candidate)
+
+        self.assertEqual(report["status"], "supported")
+        (self.root / "unexpected.txt").write_text("dirty\n", encoding="utf-8")
+        with self.assertRaisesRegex(SupervisorError, "dirty state is unsupported"):
+            supervisor.legacy_cutover_dry_run(candidate)
+
+    def test_accepted_cutover_closes_sentinel_and_preserves_archive(self):
+        legacy, candidate = self._engine("legacy"), self._engine("candidate")
+        supervisor = self._legacy_runtime(legacy)
+        report = supervisor.legacy_cutover_dry_run(candidate)
+        identity = report["candidate"]["identity"]
+        supervisor.host_owner_path.write_text(json.dumps({
+            "version": 1, "host_id": "cutover-host", "lease_id": "lease",
+            "engine_build_id": identity["build_id"],
+        }), encoding="utf-8")
+        os.environ["DEV_SUPERVISOR_HOST_ID"] = "cutover-host"
+        try:
+            supervisor.apply_legacy_cutover(
+                candidate, source_checksum=report["source_checksum"], go=True,
+            )
+            current = Supervisor(self.root, assets_dir=candidate, now=lambda: NOW)
+            applied_record = json.loads(current.legacy_cutover_path.read_text(encoding="utf-8"))
+
+            state = current.accept_legacy_cutover("Reviewed qualification and accepted 2.0.")
+
+            self.assertEqual(state["phase"], "PLAN_COMPLETED")
+            self.assertEqual(state["completed_tickets"], ["T30"])
+            self.assertEqual(state["plan_epochs"][0]["completion"]["ticket"], "T30")
+            self.assertTrue((current.runtime / report["archive"]).is_file())
+            record = json.loads(current.legacy_cutover_path.read_text(encoding="utf-8"))
+            self.assertEqual(record["status"], "cutover_accepted")
+            current.legacy_cutover_path.write_text(json.dumps(applied_record), encoding="utf-8")
+            retried = current.accept_legacy_cutover("Reviewed qualification and accepted 2.0.")
+            self.assertEqual(retried["phase"], "PLAN_COMPLETED")
+            record = json.loads(current.legacy_cutover_path.read_text(encoding="utf-8"))
+            self.assertEqual(record["status"], "cutover_accepted")
+            with self.assertRaisesRegex(SupervisorError, "rollback is closed"):
+                current.rollback_legacy_cutover()
+        finally:
+            os.environ.pop("DEV_SUPERVISOR_HOST_ID", None)
+
+    def test_cutover_acceptance_rejects_nonfinal_or_inexact_state(self):
+        legacy, candidate = self._engine("legacy"), self._engine("candidate")
+        supervisor = self._legacy_runtime(legacy)
+        with self.assertRaisesRegex(SupervisorError, "final milestone sentinel"):
+            supervisor.accept_legacy_cutover("Not converted.")
 
 
 class ColdStartTests(unittest.TestCase):

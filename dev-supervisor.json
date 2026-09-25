@@ -9,6 +9,11 @@
     "docs/architecture/implementation-plan.md"
   ],
   "bootstrap_ticket": "T00",
+  "capabilities": {
+    "repository_push": false,
+    "self_modification": false,
+    "user_requested_modification": false
+  },
   "diagnostic": {
     "completed_same_ticket_recoveries": 2,
     "max_adr_documents": 3,
@@ -20,9 +25,6 @@
   },
   "evidence_check_commands": {},
   "expected_branch": "main",
-  "forecast": {
-    "minimum_history_samples": 2
-  },
   "host_verification_capabilities": {},
   "human_evidence_gates": {},
   "implementation_forbidden_paths": [
@@ -32,6 +34,11 @@
     "dev"
   ],
   "implementation_plan": "docs/architecture/implementation-plan.md",
+  "improvement": {
+    "max_description_characters": 2000,
+    "max_tickets": 1,
+    "successor_directory": ".dev-supervisor/successors"
+  },
   "initial_completed_tickets": [],
   "milestones": [
     {
@@ -70,23 +77,131 @@
     "max_model_invocations": 3
   },
   "quota": {
-    "architecture": {
-      "five_hour_percent_left": 30,
-      "weekly_percent_left": 20
-    },
-    "diagnostic": {
-      "five_hour_percent_left": 30,
-      "weekly_percent_left": 20
-    },
-    "implementation": {
-      "five_hour_percent_left": 20,
-      "weekly_percent_left": 15
-    },
-    "max_snapshot_age_minutes": 30,
+    "account_id": "manual-observation",
+    "high_reuse_invocation_count": 1,
+    "high_reuse_ttl_minutes": 30,
     "provider": "manual",
-    "supervisor_repair": {
-      "five_hour_percent_left": 30,
-      "weekly_percent_left": 20
+    "roles": {
+      "architecture": {
+        "five_hour": {
+          "high": {
+            "maximum_percent": 100,
+            "minimum_percent": 60
+          },
+          "low": {
+            "maximum_percent": 29,
+            "minimum_percent": 0
+          },
+          "medium": {
+            "maximum_percent": 59,
+            "minimum_percent": 30
+          }
+        },
+        "weekly": {
+          "high": {
+            "maximum_percent": 100,
+            "minimum_percent": 50
+          },
+          "low": {
+            "maximum_percent": 19,
+            "minimum_percent": 0
+          },
+          "medium": {
+            "maximum_percent": 49,
+            "minimum_percent": 20
+          }
+        }
+      },
+      "diagnostic": {
+        "five_hour": {
+          "high": {
+            "maximum_percent": 100,
+            "minimum_percent": 60
+          },
+          "low": {
+            "maximum_percent": 29,
+            "minimum_percent": 0
+          },
+          "medium": {
+            "maximum_percent": 59,
+            "minimum_percent": 30
+          }
+        },
+        "weekly": {
+          "high": {
+            "maximum_percent": 100,
+            "minimum_percent": 50
+          },
+          "low": {
+            "maximum_percent": 19,
+            "minimum_percent": 0
+          },
+          "medium": {
+            "maximum_percent": 49,
+            "minimum_percent": 20
+          }
+        }
+      },
+      "implementation": {
+        "five_hour": {
+          "high": {
+            "maximum_percent": 100,
+            "minimum_percent": 50
+          },
+          "low": {
+            "maximum_percent": 19,
+            "minimum_percent": 0
+          },
+          "medium": {
+            "maximum_percent": 49,
+            "minimum_percent": 20
+          }
+        },
+        "weekly": {
+          "high": {
+            "maximum_percent": 100,
+            "minimum_percent": 45
+          },
+          "low": {
+            "maximum_percent": 14,
+            "minimum_percent": 0
+          },
+          "medium": {
+            "maximum_percent": 44,
+            "minimum_percent": 15
+          }
+        }
+      },
+      "supervisor_repair": {
+        "five_hour": {
+          "high": {
+            "maximum_percent": 100,
+            "minimum_percent": 60
+          },
+          "low": {
+            "maximum_percent": 29,
+            "minimum_percent": 0
+          },
+          "medium": {
+            "maximum_percent": 59,
+            "minimum_percent": 30
+          }
+        },
+        "weekly": {
+          "high": {
+            "maximum_percent": 100,
+            "minimum_percent": 50
+          },
+          "low": {
+            "maximum_percent": 19,
+            "minimum_percent": 0
+          },
+          "medium": {
+            "maximum_percent": 49,
+            "minimum_percent": 20
+          }
+        }
+      }
     }
   },
   "supervisor_control_paths": [
@@ -127,5 +242,5 @@
       "name": "Git diff check"
     }
   ],
-  "version": 1
+  "version": 3
 }

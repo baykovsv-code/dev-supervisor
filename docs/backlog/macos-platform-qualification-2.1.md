@@ -1,12 +1,13 @@
-# Supervisor 2.1 candidate: restricted-workplace macOS qualification
+# Deferred candidate: real-device macOS qualification
 
-Status: **backlog input only — not an executable 2.0 ticket or cutover prerequisite**.
+Status: **deferred beyond 2.1 — not part of the approved 2.1 real-device test scope**.
 
 ## Objective
 
-Prepare and qualify a Supervisor 2.1 successor for a contemporary workplace Mac after
-the Linux-hosted Supervisor 2.0 generation has completed cutover and controls its own
-successor-development workflow.
+Eventually qualify a future Supervisor successor on a real contemporary Mac. During
+2.1, only deterministic portability review and simulated platform-contract tests are
+in scope. They do not constitute real-device qualification and do not authorize a
+macOS support claim.
 
 ## Host constraint
 
@@ -43,7 +44,8 @@ successor-development workflow.
 
 ## Candidate acceptance criteria
 
-- Supervisor 2.0 creates and approves a bounded 2.1 plan before implementation.
+- A future plan explicitly opts into real-device Mac qualification; the 2.1 plan does
+  not.
 - The inbound bundle contains all required code, fixtures, instructions, and checks;
   qualification needs no outbound code, log, artifact, or network transfer.
 - Local checks cover `init`, read-only `status`, lock exclusion, stop/watchdog cleanup,
@@ -51,8 +53,8 @@ successor-development workflow.
   recovery where workplace policy permits it, engine update/rollback, and supported
   migration behavior.
 - One isolated ordinary workflow using the locally installed Codex CLI reaches its
-  expected terminal result without touching live `personal-assistant` state. Any model
-  call uses normal explicit quota authorization.
+  expected terminal result without touching live managed-project state. Any model call
+  uses normal explicit quota authorization.
 - A failed stage remains unsupported until a corrected inbound candidate passes; an
   oral problem description may guide diagnosis but cannot waive or override the stage.
 - The repository records the exact limits of human-attested evidence and makes no
@@ -61,13 +63,13 @@ successor-development workflow.
 
 ## Documentation impact
 
-`Required — 2.1 platform support and restricted-host qualification workflow.` Update
-normative English and affected maintained Russian operator documentation when this
-candidate becomes an approved 2.1 ticket.
+`Required when activated in a future release — platform support and restricted-host
+qualification workflow.` For 2.1, documentation must state that real-device Mac
+qualification was not performed and macOS remains unsupported.
 
 ## Non-goals
 
-- delaying the initial Linux-hosted Supervisor 2.0 cutover;
+- treating 2.1 simulated portability tests as a real Mac PASS;
 - exporting workplace code, logs, diagnostics, or machine identity;
 - treating oral reports as raw or independently reproducible evidence;
 - weakening a safety guard to obtain a macOS PASS;
