@@ -1,8 +1,12 @@
 # Development Supervisor operator guide
 
-This is the practical runbook for the current bootstrap arrangement. It explains what
-is safe to run, what must remain pinned, and what requires a human decision. It does
-not replace the authoritative architecture or ticket acceptance criteria.
+This is normative English operator material for the implemented T01-T10 behavior and
+the practical bootstrap arrangement. It explains what is safe to run, what must remain
+pinned, and what requires a human decision. The architecture and approved ticket
+acceptance criteria remain the controlling design record. The maintained Russian
+operator translation is [operator-guide.ru.md](operator-guide.ru.md); English is the
+sole complete normative documentation set. See [documentation governance](documentation-governance.md)
+for pairing, freshness, and legacy-evidence rules.
 
 ## Current controller topology
 
@@ -73,6 +77,58 @@ fresh observation.
 Setting quota does not approve architecture, release a human gate, authorize push, or
 permit self-repair.
 
+## Supervisor 2.0 operating contract through T10
+
+Configuration is versioned and validated before a model, Git mutation, or remote
+operation. The independent `self_modification`, `user_requested_modification`, and
+`repository_push` capabilities are disabled by default and fail closed. A repository
+policy can further restrict a host/operator grant, but repository content and prompts
+cannot enable a capability. Effective configuration exposes provenance while redacting
+secrets. Unknown keys, unsupported versions, invalid ranges, contradictory values, or
+missing grants stop the operation.
+
+The durable lifecycle is assessment, requirements review, architecture review, plan
+ready, ticket execution, plan completed, backlog review, then an approved new plan
+epoch. Approvals name exact document versions. Completion of a final ticket is
+reconciled idempotently into `PLAN_COMPLETED`; it never starts a model or chooses more
+work. A backlog item becomes executable only after bounded selection, requirements and
+dependency analysis, architecture-impact review, human approval, and a new immutable
+plan epoch. State, approvals, epochs, engine identity, and audit events are versioned;
+unknown, unsupported, ambiguous, or newer forms stop without an implicit rewrite.
+
+Existing-project admission is read-only to product code. A project without an
+architecture receives an external-architecture requirement and admission checklist;
+foreign-format documents receive compatibility findings and a mapping/gap manifest.
+Supervisor is not adapted to fit the project, and no compatible plan/index is created
+until the source baseline is reviewed and approved.
+
+For an explicitly requested bounded improvement, preserve the trigger, perform an
+architecture-impact review, obtain approval, use a bounded plan/ticket, verify, and
+escalate to the ordinary cycle if bounds fail. Self-development follows that same
+workflow but produces a successor in an isolated checkout. The generation currently
+controlling a run stays immutable. Activation is a separate, quiescent, human-approved
+handoff with rollback; two controller generations never control the same project.
+
+Quota is based only on trusted current observations: high observations can authorize a
+bounded number of calls within their TTL, medium observations require a fresh snapshot
+per call, and low or unknown observations block. Every invocation has an audit record.
+There is no quota/reset/capacity forecast and no `forecast.fallback_ticket_hours`
+configuration or migration.
+
+For a generic unchanged `VERIFICATION_FAILED` checkpoint, do not rerun the failed
+check. An explicit audited same-ticket recovery first validates the exact model
+checkpoint, exactly one currently configured failed check, and its durable log. This
+validation alone invokes no model and consumes no quota. The repair then passes the
+full verification suite and ordinary scope and commit gates. Missing, altered, stale,
+or ambiguous evidence fails closed; mandatory host verification follows its stricter
+handling.
+
+An engine update uses a separately staged immutable identity with compatible
+configuration/state/protocol ranges. Verify, dry-run migration, and test it away from
+the active controller; archive and switch only at quiescence; then reconcile
+read-only. A stale host or incompatible state makes no write. Rollback stops the new
+generation before restoring the archived predecessor.
+
 ## Developing Supervisor 2.0
 
 Do not start T00 until the requirements index, architecture, plan, and ticket set have
@@ -87,9 +143,9 @@ cd /home/dev/Documents/dev-supervisor
 ```
 
 T00 creates the redacted `personal-assistant` compatibility fixture and no-model
-harness. Every T01-T11 ticket must then pass that harness as part of the normal test
-suite. Intermediate revisions are tested only on isolated copies; they are never bound
-to live `personal-assistant`.
+harness. Every implementation ticket through F12 in authoritative plan order must
+then pass that harness as part of the normal test suite. Intermediate revisions are
+tested only on isolated copies; they are never bound to live `personal-assistant`.
 
 Before every run:
 
