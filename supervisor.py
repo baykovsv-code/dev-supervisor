@@ -35,6 +35,8 @@ ENGINE_BINDING_VERSION = 2
 ENGINE_PROTOCOL_VERSION = 1
 ENGINE_ARCHIVES_DIRECTORY = "engine-archives"
 ENGINE_UPDATE_NAME = "engine-update.json"
+SCOPE_RECOVERY_NAME = "scope-recovery.json"
+PLAN_AMENDMENT_NAME = "plan-amendment.json"
 LEGACY_CUTOVER_NAME = "legacy-cutover.json"
 LEGACY_CUTOVER_ARCHIVES_DIRECTORY = "legacy-cutover-archives"
 HOST_OWNER_NAME = "host-owner.json"
@@ -1798,6 +1800,8 @@ class Supervisor:
         self.engine_binding_path = self.runtime / ENGINE_BINDING_NAME
         self.host_owner_path = self.runtime / HOST_OWNER_NAME
         self.engine_update_path = self.runtime / ENGINE_UPDATE_NAME
+        self.scope_recovery_path = self.runtime / SCOPE_RECOVERY_NAME
+        self.plan_amendment_path = self.runtime / PLAN_AMENDMENT_NAME
         self.legacy_cutover_path = self.runtime / LEGACY_CUTOVER_NAME
         self.host_capability_grants, self.host_capability_provenance, self.host_push_target = load_host_capability_grants(
             self.host_capabilities_path
@@ -2103,6 +2107,234 @@ class Supervisor:
         result = {"status": "rolled_back", "archive": archive_ref, "product_snapshot": before}
         atomic_write_json(self.engine_update_path, result)
         return result
+
+    def later_scope_recovery_dry_run(
+        self,
+        expected_run_id: str,
+        expected_fingerprint: str,
+        *,
+        run_tests: bool = True,
+    ) -> dict[str, Any]:
+        """Qualify an exact later-owned scope checkpoint and this successor engine."""
+        state = self.load_state(read_only=True)
+        error, later_hits = self._validated_later_owned_scope_checkpoint(
+            state,
+            expected_run_id=expected_run_id,
+            expected_fingerprint=expected_fingerprint,
+        )
+        if error is not None:
+            raise SupervisorError("later-owned scope recovery is unavailable: " + error)
+        candidate_identity = self._engine_identity(self.assets_dir)
+        raw_binding = read_json(self.engine_binding_path)
+        current_binding = self._load_engine_binding()
+        if current_binding.get("kind") != "v2":
+            raise SupervisorError("later-owned scope recovery requires a versioned predecessor binding")
+        predecessor_root = Path(current_binding["engine_root"]).expanduser().resolve()
+        if predecessor_root == self.assets_dir:
+            raise SupervisorError("later-owned scope recovery must run from an isolated successor engine")
+        if self._engine_identity(predecessor_root) != current_binding["identity"]:
+            raise SupervisorError("predecessor engine identity no longer matches its binding")
+        required_engine = state.get("engine_requirement")
+        if required_engine is not None and required_engine != current_binding["identity"]:
+            raise SupervisorError("state requires an engine other than the bound predecessor")
+        owner = read_json(self.host_owner_path)
+        host_id = os.environ.get("DEV_SUPERVISOR_HOST_ID")
+        if (
+            set(owner) != {"version", "host_id", "lease_id", "engine_build_id"}
+            or owner.get("version") != 1
+            or not host_id
+            or owner.get("host_id") != host_id
+            or owner.get("engine_build_id") != current_binding["identity"]["build_id"]
+        ):
+            raise SupervisorError("predecessor host writer ownership is missing or contradictory")
+        tests: dict[str, Any] = {"ran": False, "passed": None}
+        if run_tests:
+            result = subprocess.run(
+                [sys.executable, "-m", "unittest", "discover", "-s", "tests"],
+                cwd=self.assets_dir, text=True, capture_output=True, timeout=120,
+            )
+            tests = {
+                "ran": True,
+                "passed": result.returncode == 0,
+                "returncode": result.returncode,
+                "output_digest": hashlib.sha256(
+                    (result.stdout + result.stderr).encode()
+                ).hexdigest(),
+            }
+            if result.returncode:
+                raise SupervisorError("scope-recovery successor engine tests failed")
+        return {
+            "version": 1,
+            "status": "qualified",
+            "source_checksum": content_checksum(state),
+            "ticket": state["current_ticket"],
+            "run_id": expected_run_id,
+            "starting_head": state["active_run"]["starting_head"],
+            "fingerprint": expected_fingerprint,
+            "later_hits": [
+                {"path": path, "owner": owner_ticket}
+                for path, owner_ticket in later_hits
+            ],
+            "candidate_root": str(self.assets_dir),
+            "candidate_identity": candidate_identity,
+            "predecessor_binding": raw_binding,
+            "predecessor_owner": owner,
+            "product_snapshot": self._product_snapshot(),
+            "tests": tests,
+            "writes_required": True,
+        }
+
+    def apply_later_scope_recovery(
+        self,
+        expected_run_id: str,
+        expected_fingerprint: str,
+        source_checksum: str,
+        note: str,
+        *,
+        go: bool,
+        run_tests: bool = True,
+    ) -> dict[str, Any]:
+        """Atomically hand one exact scope checkpoint to a qualified successor."""
+        if not go:
+            raise SupervisorError("later-owned scope recovery requires an explicit human go decision")
+        if not note.strip() or len(note.strip()) > 2000:
+            raise SupervisorError("later-owned scope recovery requires a bounded nonempty decision note")
+        report = self.later_scope_recovery_dry_run(
+            expected_run_id, expected_fingerprint, run_tests=run_tests,
+        )
+        if source_checksum != report["source_checksum"]:
+            raise SupervisorError("scope checkpoint changed after dry-run qualification")
+        source_state = read_json(self.state_path)
+        if content_checksum(source_state) != source_checksum:
+            raise SupervisorError("scope checkpoint changed before recovery apply")
+        archive = {
+            "version": 1,
+            "kind": "later_owned_scope_recovery",
+            "state": source_state,
+            "state_checksum": source_checksum,
+            "binding": report["predecessor_binding"],
+            "host_owner": report["predecessor_owner"],
+            "product_snapshot": report["product_snapshot"],
+        }
+        archive_path = self.runtime / ENGINE_ARCHIVES_DIRECTORY / (
+            content_checksum(archive) + ".json"
+        )
+        if archive_path.exists():
+            if read_json(archive_path) != archive:
+                raise SupervisorError("scope-recovery archive collision")
+        else:
+            atomic_write_json(archive_path, archive)
+        receipt = {
+            "version": 1,
+            "status": "applied",
+            "source_checksum": source_checksum,
+            "archive": str(archive_path.relative_to(self.runtime)),
+            "ticket": report["ticket"],
+            "run_id": report["run_id"],
+            "starting_head": report["starting_head"],
+            "fingerprint": report["fingerprint"],
+            "later_hits": report["later_hits"],
+            "candidate_identity": report["candidate_identity"],
+            "note": note.strip(),
+        }
+        atomic_write_json(self.scope_recovery_path, receipt)
+        authorization = {
+            "status": "approved",
+            "record_checksum": content_checksum(receipt),
+            "ticket": report["ticket"],
+            "run_id": report["run_id"],
+            "starting_head": report["starting_head"],
+            "fingerprint": report["fingerprint"],
+            "later_hits": report["later_hits"],
+        }
+        new_binding = {
+            "version": ENGINE_BINDING_VERSION,
+            "engine_root": report["candidate_root"],
+            "identity": report["candidate_identity"],
+            "compatibility": {
+                "state": {"minimum": STATE_VERSION, "maximum": STATE_VERSION},
+                "policy": {"minimum": self.policy["version"], "maximum": self.policy["version"]},
+                "protocol": {"minimum": ENGINE_PROTOCOL_VERSION, "maximum": ENGINE_PROTOCOL_VERSION},
+            },
+        }
+        new_owner = {
+            "version": 1,
+            "host_id": report["predecessor_owner"]["host_id"],
+            "lease_id": "scope-recovery-" + report["candidate_identity"]["revision"][:12],
+            "engine_build_id": report["candidate_identity"]["build_id"],
+        }
+        recovered = deepcopy(source_state)
+        recovered["engine_requirement"] = report["candidate_identity"]
+        recovered["active_run"]["later_owned_scope_authorization"] = authorization
+        try:
+            atomic_write_json(self.host_owner_path, new_owner)
+            atomic_write_json(self.engine_binding_path, new_binding)
+            self.transition(
+                recovered,
+                "SCOPE_PENDING",
+                "Exact later-owned scope checkpoint authorized by human decision; scope recheck is pending.",
+                scope_recovery_unavailable=None,
+            )
+        except BaseException:
+            atomic_write_json(self.state_path, source_state)
+            atomic_write_json(self.engine_binding_path, report["predecessor_binding"])
+            atomic_write_json(self.host_owner_path, report["predecessor_owner"])
+            raise
+        result = {
+            "status": "activated",
+            "archive": receipt["archive"],
+            "identity": report["candidate_identity"],
+            "source_checksum": source_checksum,
+            "run_id": report["run_id"],
+            "fingerprint": report["fingerprint"],
+            "product_snapshot": report["product_snapshot"],
+        }
+        atomic_write_json(self.engine_update_path, result)
+        return result
+
+    def rollback_later_scope_recovery(self) -> dict[str, Any]:
+        """Restore the exact pre-handoff scope checkpoint before it is resumed."""
+        receipt = read_json(self.scope_recovery_path)
+        if receipt.get("status") != "applied":
+            raise SupervisorError("scope recovery is not in an applied state")
+        archive_ref = receipt.get("archive")
+        if (
+            not isinstance(archive_ref, str)
+            or Path(archive_ref).is_absolute()
+            or ".." in Path(archive_ref).parts
+        ):
+            raise SupervisorError("scope-recovery archive path is malformed")
+        archive = read_json(self.runtime / archive_ref)
+        state = self.load_state(read_only=True)
+        active = state.get("active_run") or {}
+        authorization = active.get("later_owned_scope_authorization")
+        if (
+            archive.get("kind") != "later_owned_scope_recovery"
+            or content_checksum(archive.get("state")) != archive.get("state_checksum")
+            or archive.get("state_checksum") != receipt.get("source_checksum")
+            or state.get("phase") != "SCOPE_PENDING"
+            or not isinstance(authorization, dict)
+            or authorization.get("record_checksum") != content_checksum(receipt)
+            or active.get("id") != receipt.get("run_id")
+            or active.get("post_invocation_fingerprint") != receipt.get("fingerprint")
+            or self._product_snapshot() != archive.get("product_snapshot")
+        ):
+            raise SupervisorError("scope recovery advanced or no longer matches its exact rollback checkpoint")
+        current = self._assert_engine_binding(state)
+        self._assert_writer_lease(current)
+        if current.get("identity") != receipt.get("candidate_identity"):
+            raise SupervisorError("scope recovery is not bound to its recorded successor")
+        atomic_write_json(self.state_path, archive["state"])
+        atomic_write_json(self.engine_binding_path, archive["binding"])
+        atomic_write_json(self.host_owner_path, archive["host_owner"])
+        rolled_back = dict(receipt)
+        rolled_back["status"] = "rolled_back"
+        atomic_write_json(self.scope_recovery_path, rolled_back)
+        return {
+            "status": "rolled_back",
+            "source_checksum": receipt["source_checksum"],
+            "product_snapshot": archive["product_snapshot"],
+        }
 
     def _legacy_cutover_artifacts(self) -> dict[str, dict[str, str]]:
         """Return exact, bounded-by-runtime evidence for legacy run artifacts.
@@ -3008,6 +3240,313 @@ class Supervisor:
         cycle["phase"] = "READY_EPOCH"
         atomic_write_json(self.backlog_cycle_path, cycle)
         return cycle
+
+    def insertion_plan_amendment_dry_run(
+        self, plan_source: Path, fix_ticket_source: Path,
+    ) -> dict[str, Any]:
+        """Qualify one append-only successor epoch that inserts one fix before the pending suffix."""
+        state = self.load_state(read_only=True)
+        if (
+            state.get("phase") not in QUOTA_STATES | {"READY"}
+            or state.get("active_run") is not None
+            or state.get("pending_commit") is not None
+            or state.get("starting_head") is not None
+        ):
+            raise SupervisorError("plan amendment requires a clean pre-invocation quota or READY checkpoint")
+        if not self.git.is_clean() or self.git.branch() != self.policy["expected_branch"]:
+            raise SupervisorError("plan amendment requires the clean expected branch")
+        if self.git.head() != state.get("last_commit"):
+            raise SupervisorError("plan amendment HEAD must equal the last supervisor commit")
+        cycle = self._load_backlog_cycle()
+        materialization = cycle.get("materialization")
+        current_epoch = self._current_epoch(state)
+        if (
+            cycle.get("phase") != "READY_EPOCH"
+            or not isinstance(materialization, dict)
+            or materialization.get("epoch_id") != current_epoch.get("epoch_id")
+            or current_epoch.get("completion") is not None
+        ):
+            raise SupervisorError("plan amendment requires the unchanged active materialized epoch")
+        old_tickets = self._plan_tickets()
+        completed = state.get("completed_tickets")
+        if (
+            not isinstance(completed, list)
+            or not completed
+            or completed != old_tickets[:len(completed)]
+            or len(completed) >= len(old_tickets)
+            or state.get("current_ticket") != old_tickets[len(completed)]
+        ):
+            raise SupervisorError("plan amendment requires one exact completed prefix and pending suffix")
+        plan_bytes = plan_source.expanduser().resolve().read_bytes()
+        ticket_bytes = fix_ticket_source.expanduser().resolve().read_bytes()
+        if not plan_bytes or not ticket_bytes:
+            raise SupervisorError("plan amendment sources must be nonempty")
+        new_tickets = self._parse_plan_tickets(plan_bytes.decode("utf-8"))
+        remaining = old_tickets[len(completed):]
+        if (
+            len(new_tickets) != len(remaining) + 1
+            or new_tickets[1:] != remaining
+            or not new_tickets[0].startswith("F")
+            or new_tickets[0] in {item for epoch in state["plan_epochs"] for item in epoch["tickets"]}
+        ):
+            raise SupervisorError("plan amendment must insert exactly one new F-ticket before the unchanged pending suffix")
+        fix_ticket = new_tickets[0]
+        expected_pattern = f"{fix_ticket.lower()}-"
+        if not fix_ticket_source.name.startswith(expected_pattern) or fix_ticket_source.suffix != ".md":
+            raise SupervisorError("plan amendment fix-ticket filename does not match the inserted ticket")
+        ticket_text = ticket_bytes.decode("utf-8")
+        if f"# {fix_ticket}:" not in ticket_text or "## Documentation impact" not in ticket_text:
+            raise SupervisorError("plan amendment fix ticket lacks its exact identity or documentation impact")
+        old_index = self._backlog_cycle_artifact(materialization["index"])
+        index_bytes = old_index.read_bytes()
+        if hashlib.sha256(index_bytes).hexdigest() != materialization.get("index_digest"):
+            raise SupervisorError("active materialized requirements index changed")
+        old_ticket_dir = self._backlog_cycle_artifact(materialization["tickets"])
+        inherited: dict[str, str] = {}
+        inherited_checksums: dict[str, str] = {}
+        for ticket in remaining:
+            pattern = f"{ticket.lower()}-*.md" if ticket.startswith("F") else f"{int(ticket[1:]):02d}-*.md"
+            matches = sorted(old_ticket_dir.glob(pattern))
+            if len(matches) != 1:
+                raise SupervisorError(f"active materialization does not contain exactly one {ticket} ticket")
+            inherited[ticket] = matches[0].name
+            inherited_checksums[ticket] = hashlib.sha256(matches[0].read_bytes()).hexdigest()
+        identity_material = {
+            "predecessor_epoch": current_epoch["epoch_id"],
+            "head": self.git.head(),
+            "plan_sha256": hashlib.sha256(plan_bytes).hexdigest(),
+            "ticket_sha256": hashlib.sha256(ticket_bytes).hexdigest(),
+            "completed_prefix": completed,
+        }
+        epoch_id = content_checksum(identity_material)[:32]
+        if any(epoch.get("epoch_id") == epoch_id for epoch in state["plan_epochs"]):
+            raise SupervisorError("plan amendment epoch already exists")
+        return {
+            "version": 1,
+            "status": "qualified",
+            # The receipt binds both the exact frontier and every operator or
+            # inherited input that will be copied.  A state-only checksum would
+            # let an edited plan or fix ticket slip between dry run and apply.
+            "source_checksum": content_checksum({
+                "state": state,
+                "cycle": cycle,
+                "plan_sha256": hashlib.sha256(plan_bytes).hexdigest(),
+                "ticket_sha256": hashlib.sha256(ticket_bytes).hexdigest(),
+                "index_sha256": hashlib.sha256(index_bytes).hexdigest(),
+                "inherited_ticket_sha256": inherited_checksums,
+            }),
+            "source_state_checksum": content_checksum(state),
+            "source_cycle_checksum": content_checksum(cycle),
+            "source_epoch_id": current_epoch["epoch_id"],
+            "source_plan_digest": current_epoch["plan_digest"],
+            "completed_prefix": list(completed),
+            "remaining_tickets": remaining,
+            "fix_ticket": fix_ticket,
+            "new_tickets": new_tickets,
+            "epoch_id": epoch_id,
+            "head": self.git.head(),
+            "plan_sha256": hashlib.sha256(plan_bytes).hexdigest(),
+            "ticket_sha256": hashlib.sha256(ticket_bytes).hexdigest(),
+            "index_sha256": hashlib.sha256(index_bytes).hexdigest(),
+            "inherited_ticket_files": inherited,
+            "inherited_ticket_sha256": inherited_checksums,
+            "plan_source": str(plan_source.expanduser().resolve()),
+            "ticket_source": str(fix_ticket_source.expanduser().resolve()),
+            "writes_required": True,
+        }
+
+    def apply_insertion_plan_amendment(
+        self,
+        plan_source: Path,
+        fix_ticket_source: Path,
+        source_checksum: str,
+        note: str,
+        *,
+        go: bool,
+    ) -> dict[str, Any]:
+        """Append one successor epoch for an explicitly approved safety fix."""
+        if not go:
+            raise SupervisorError("plan amendment requires an explicit human go decision")
+        if not note.strip() or len(note.strip()) > 2000:
+            raise SupervisorError("plan amendment requires a bounded nonempty decision note")
+        report = self.insertion_plan_amendment_dry_run(plan_source, fix_ticket_source)
+        if report["source_checksum"] != source_checksum:
+            raise SupervisorError("plan or state changed after amendment dry-run")
+        source_state = read_json(self.state_path)
+        source_cycle = read_json(self.backlog_cycle_path)
+        if content_checksum({
+            "state": source_state,
+            "cycle": source_cycle,
+            "plan_sha256": hashlib.sha256(Path(report["plan_source"]).read_bytes()).hexdigest(),
+            "ticket_sha256": hashlib.sha256(Path(report["ticket_source"]).read_bytes()).hexdigest(),
+            "index_sha256": hashlib.sha256(
+                self._backlog_cycle_artifact(source_cycle["materialization"]["index"]).read_bytes()
+            ).hexdigest(),
+            "inherited_ticket_sha256": {
+                ticket: hashlib.sha256(
+                    (self._backlog_cycle_artifact(source_cycle["materialization"]["tickets"]) / filename).read_bytes()
+                ).hexdigest()
+                for ticket, filename in report["inherited_ticket_files"].items()
+            },
+        }) != source_checksum:
+            raise SupervisorError("plan amendment source changed before apply")
+        archive = {
+            "version": 1,
+            "kind": "insertion_plan_amendment",
+            "state": source_state,
+            "cycle": source_cycle,
+            "source_checksum": source_checksum,
+            "frontier_checksum": content_checksum({"state": source_state, "cycle": source_cycle}),
+            "product_snapshot": self._product_snapshot(),
+        }
+        archive_path = self.runtime / "plan-amendments" / (content_checksum(archive) + ".json")
+        self._write_cold_start_bytes(archive_path, canonical_json_bytes(archive))
+
+        epoch_id = report["epoch_id"]
+        base = epoch_id
+        plan_bytes = Path(report["plan_source"]).read_bytes()
+        ticket_bytes = Path(report["ticket_source"]).read_bytes()
+        source_materialization = source_cycle["materialization"]
+        index_bytes = self._backlog_cycle_artifact(source_materialization["index"]).read_bytes()
+        self._write_cold_start_bytes(
+            self._backlog_cycle_artifact(f"{base}/implementation-plan.md"), plan_bytes,
+        )
+        self._write_cold_start_bytes(
+            self._backlog_cycle_artifact(f"{base}/requirements-index.md"), index_bytes,
+        )
+        self._write_cold_start_bytes(
+            self._backlog_cycle_artifact(f"{base}/tickets/{Path(report['ticket_source']).name}"),
+            ticket_bytes,
+        )
+        old_ticket_dir = self._backlog_cycle_artifact(source_materialization["tickets"])
+        for ticket, filename in report["inherited_ticket_files"].items():
+            inherited_bytes = (old_ticket_dir / filename).read_bytes()
+            if hashlib.sha256(inherited_bytes).hexdigest() != report["inherited_ticket_sha256"][ticket]:
+                raise SupervisorError("inherited materialized ticket changed before amendment apply")
+            self._write_cold_start_bytes(
+                self._backlog_cycle_artifact(f"{base}/tickets/{filename}"),
+                inherited_bytes,
+            )
+        old_sources = source_materialization.get("ticket_sources") or {}
+        ticket_sources = {report["fix_ticket"]: ["OPERATOR-SAFETY-FIX"]}
+        for ticket in report["remaining_tickets"]:
+            ticket_sources[ticket] = list(old_sources.get(ticket, []))
+        materialization = {
+            "epoch_id": epoch_id,
+            "plan": f"{base}/implementation-plan.md",
+            "index": f"{base}/requirements-index.md",
+            "tickets": f"{base}/tickets",
+            "ticket_sources": ticket_sources,
+            "plan_digest": report["plan_sha256"],
+            "index_digest": report["index_sha256"],
+        }
+        amended_state = deepcopy(source_state)
+        source_epoch = next(
+            epoch for epoch in amended_state["plan_epochs"]
+            if epoch["epoch_id"] == report["source_epoch_id"]
+        )
+        source_epoch["completion"] = {
+            "reason": "superseded after verified prefix by insertion-only safety amendment",
+            "commit": report["head"],
+            "ticket": report["completed_prefix"][-1],
+            "completed_prefix": report["completed_prefix"],
+            "remaining_tickets": report["remaining_tickets"],
+            "superseded_by": epoch_id,
+            "note": note.strip(),
+        }
+        amended_state["plan_epochs"].append({
+            "epoch_id": epoch_id,
+            "prior_epoch_id": report["source_epoch_id"],
+            "created_at": isoformat(self.now()),
+            "plan_digest": report["plan_sha256"],
+            "tickets": report["new_tickets"],
+            "completion": None,
+        })
+        amended_state["current_plan_epoch_id"] = epoch_id
+        amended_state["completed_tickets"] = []
+        amended_state["current_ticket"] = report["fix_ticket"]
+        amended_state["active_run"] = None
+        amended_state["pending_commit"] = None
+        amended_state["starting_head"] = None
+        amended_state.pop("quota_resume_phase", None)
+        amended_state.pop("pending_role", None)
+        amended_state["history"].append({
+            "at": isoformat(self.now()),
+            "from": source_state["phase"],
+            "to": "READY",
+            "message": f"Insertion-only safety amendment created epoch {epoch_id}; {report['fix_ticket']} is next.",
+        })
+        amended_state["phase"] = "READY"
+        amended_state["message"] = amended_state["history"][-1]["message"]
+        amended_state["updated_at"] = isoformat(self.now())
+        amended_cycle = deepcopy(source_cycle)
+        amended_cycle["prior_epoch_id"] = report["source_epoch_id"]
+        amended_cycle["materialization"] = materialization
+        receipt = {
+            "version": 1,
+            "status": "applying",
+            "source_checksum": source_checksum,
+            "archive": str(archive_path.relative_to(self.runtime)),
+            "source_epoch_id": report["source_epoch_id"],
+            "epoch_id": epoch_id,
+            "fix_ticket": report["fix_ticket"],
+            "head": report["head"],
+            "note": note.strip(),
+        }
+        atomic_write_json(self.plan_amendment_path, receipt)
+        try:
+            atomic_write_json(self.backlog_cycle_path, amended_cycle)
+            self.save_state(amended_state)
+        except BaseException:
+            atomic_write_json(self.backlog_cycle_path, source_cycle)
+            atomic_write_json(self.state_path, source_state)
+            raise
+        receipt["status"] = "applied"
+        atomic_write_json(self.plan_amendment_path, receipt)
+        return {**receipt, "materialization": materialization}
+
+    def rollback_insertion_plan_amendment(self) -> dict[str, Any]:
+        """Restore the exact pre-amendment frontier before the inserted ticket starts."""
+        receipt = read_json(self.plan_amendment_path)
+        if receipt.get("status") != "applied":
+            raise SupervisorError("plan amendment is not in an applied state")
+        archive_ref = receipt.get("archive")
+        if (
+            not isinstance(archive_ref, str)
+            or Path(archive_ref).is_absolute()
+            or ".." in Path(archive_ref).parts
+        ):
+            raise SupervisorError("plan-amendment archive path is malformed")
+        archive = read_json(self.runtime / archive_ref)
+        state = self.load_state(read_only=True)
+        cycle = self._load_backlog_cycle()
+        if (
+            archive.get("kind") != "insertion_plan_amendment"
+            or content_checksum({"state": archive.get("state"), "cycle": archive.get("cycle")})
+            != archive.get("frontier_checksum")
+            or archive.get("source_checksum") != receipt.get("source_checksum")
+            or state.get("phase") != "READY"
+            or state.get("current_plan_epoch_id") != receipt.get("epoch_id")
+            or state.get("current_ticket") != receipt.get("fix_ticket")
+            or state.get("completed_tickets") != []
+            or state.get("active_run") is not None
+            or state.get("pending_commit") is not None
+            or cycle.get("materialization", {}).get("epoch_id") != receipt.get("epoch_id")
+            or self.git.head() != receipt.get("head")
+            or not self.git.is_clean()
+            or self._product_snapshot() != archive.get("product_snapshot")
+        ):
+            raise SupervisorError("plan amendment advanced or no longer matches its exact rollback checkpoint")
+        atomic_write_json(self.backlog_cycle_path, archive["cycle"])
+        atomic_write_json(self.state_path, archive["state"])
+        rolled_back = dict(receipt)
+        rolled_back["status"] = "rolled_back"
+        atomic_write_json(self.plan_amendment_path, rolled_back)
+        return {
+            "status": "rolled_back",
+            "source_checksum": receipt["source_checksum"],
+            "source_epoch_id": receipt["source_epoch_id"],
+        }
 
     def backlog_cycle_status(self) -> dict[str, Any]:
         cycle = self._load_backlog_cycle()
@@ -4243,6 +4782,124 @@ class Supervisor:
         ):
             return "the durable checkpoint artifacts contradict supervisor state"
         return None
+
+    def _validated_later_owned_scope_checkpoint(
+        self,
+        state: dict[str, Any],
+        *,
+        expected_run_id: str | None = None,
+        expected_fingerprint: str | None = None,
+    ) -> tuple[str | None, list[tuple[str, str]]]:
+        """Validate one exact verified implementation stopped only by later ownership."""
+        ticket = state.get("current_ticket")
+        active = state.get("active_run")
+        if state.get("phase") != "SCOPE_BLOCKED":
+            return "the supervisor is not at a scope-blocked checkpoint", []
+        if not isinstance(active, dict) or not isinstance(ticket, str) or not ticket:
+            return "the active implementation checkpoint or current ticket is missing", []
+        report = active.get("report")
+        changed_files = active.get("changed_files")
+        if (
+            active.get("role") != "implementation"
+            or active.get("ticket") != ticket
+            or active.get("invocation_completed") is not True
+            or active.get("exit_code") != 0
+            or active.get("rate_limited") is not False
+            or not isinstance(changed_files, list)
+            or changed_files != sorted(set(changed_files))
+            or validate_report(report, "implementation", ticket)
+            or report.get("status") != "pass"
+            or any(
+                report.get(field) is not True
+                for field in ("acceptance_passed", "tests_passed", "next_ticket_safe")
+            )
+            or report.get("architecture_deviation") is not False
+            or report.get("ambiguity") is not False
+            or report.get("product_decision_required") is not False
+            or sorted(report.get("files_changed", [])) != changed_files
+            or not self._model_checkpoint_matches(active)
+            or self.git.branch() != self.policy["expected_branch"]
+            or self._protected_paths(changed_files)
+            or active.get("later_owned_scope_authorization") is not None
+        ):
+            return "the implementation report or exact post-model tree is stale or contradictory", []
+        if expected_run_id is not None and active.get("id") != expected_run_id:
+            return "the implementation run does not match the operator-supplied identity", []
+        if expected_fingerprint is not None and active.get("post_invocation_fingerprint") != expected_fingerprint:
+            return "the implementation fingerprint does not match the operator-supplied identity", []
+
+        later_hits = self._later_owned_scope_hits(ticket, changed_files)
+        if not later_hits:
+            return "the checkpoint has no paths owned only by later tickets", []
+        if {path for path, _owner in later_hits} != set(changed_files):
+            return "the checkpoint contains a path not owned only by a later ticket", []
+        details = ", ".join(f"{path} ({owner})" for path, owner in later_hits)
+        expected_message = "Changes touch paths explicitly assigned to later tickets: " + details
+        history = state.get("history")
+        last = history[-1] if isinstance(history, list) and history else None
+        if (
+            state.get("message") != expected_message
+            or not isinstance(last, dict)
+            or last.get("from") != "SCOPE_PENDING"
+            or last.get("to") != "SCOPE_BLOCKED"
+            or last.get("message") != expected_message
+        ):
+            return "the later-owned SCOPE_BLOCKED reason is missing or no longer exact", []
+
+        expected_checks = list(self.policy["verification_commands"])
+        expected_checks.extend(
+            self.policy.get("ticket_verification_commands", {}).get(ticket, [])
+        )
+        results = active.get("verification_results")
+        if (
+            not isinstance(results, list)
+            or len(results) != len(expected_checks)
+            or any(
+                not isinstance(result, dict)
+                or result.get("name") != check.get("name")
+                or result.get("command") != check.get("command")
+                or result.get("passed") is not True
+                or result.get("exit_status") != 0
+                for result, check in zip(results, expected_checks)
+            )
+        ):
+            return "deterministic verification evidence is missing or no longer policy-exact", []
+
+        authorization = active.get("quota_authorization")
+        consumptions = state.get("quota_consumptions")
+        if (
+            not isinstance(authorization, dict)
+            or authorization.get("status") != "consumed"
+            or authorization.get("invocation_id") != active.get("id")
+            or authorization.get("role") != "implementation"
+            or authorization.get("ticket") != ticket
+            or not isinstance(consumptions, list)
+            or sum(item == authorization for item in consumptions) != 1
+        ):
+            return "the implementation quota audit is missing or contradictory", []
+
+        run_id = active.get("id")
+        if not isinstance(run_id, str) or not run_id or Path(run_id).name != run_id:
+            return "the implementation run identity is malformed", []
+        run_dir = self.runs_dir / run_id
+        try:
+            invocation = read_json(run_dir / "invocation.json")
+            persisted_report = read_json(run_dir / "final-report.json")
+            persisted_checks = json.loads((run_dir / "checks.json").read_text(encoding="utf-8"))
+            persisted_files = json.loads((run_dir / "changed-files.json").read_text(encoding="utf-8"))
+        except (SupervisorError, OSError, json.JSONDecodeError):
+            return "the durable invocation, report, verification, or changed-file artifact is unavailable", []
+        if (
+            invocation.get("completed") is not True
+            or invocation.get("exit_status") != 0
+            or invocation.get("rate_limited") is not False
+            or persisted_report != report
+            or persisted_checks != results
+            or persisted_files != changed_files
+            or not (run_dir / "check-git-diff.log").is_file()
+        ):
+            return "the durable checkpoint artifacts contradict supervisor state", []
+        return None, later_hits
 
     def _scope_blocked_recovery_error(self, state: dict[str, Any]) -> str | None:
         """Return why SCOPE_BLOCKED cannot enter protected-path architecture review."""
@@ -6601,20 +7258,18 @@ class Supervisor:
                         scope_recovery_unavailable=authorization_error,
                     )
                     return False
-            later_owned = self._later_ticket_owned_paths(active["ticket"])
-            later_hits = [
-                (path, owner)
-                for path in actual
-                for owned_path, owner in later_owned
-                if path == owned_path or path.startswith(owned_path.rstrip("/") + "/") or path.startswith(owned_path + ".")
-            ]
+            later_hits = self._later_owned_scope_hits(active["ticket"], actual)
             if later_hits:
-                details = ", ".join(f"{path} ({owner})" for path, owner in later_hits)
-                self.transition(
-                    state, "SCOPE_BLOCKED",
-                    "Changes touch paths explicitly assigned to later tickets: " + details,
+                authorization_error = self._later_owned_scope_authorization_error(
+                    state, active, later_hits,
                 )
-                return False
+                if authorization_error is not None:
+                    details = ", ".join(f"{path} ({owner})" for path, owner in later_hits)
+                    self.transition(
+                        state, "SCOPE_BLOCKED",
+                        "Changes touch paths explicitly assigned to later tickets: " + details,
+                    )
+                    return False
         else:
             allowed = self.policy["architecture_allowed_paths"]
             outside = [path for path in actual if not any(path.startswith(prefix) for prefix in allowed)]
@@ -6715,6 +7370,59 @@ class Supervisor:
                 if not shared:
                     result.append((path, ticket))
         return result
+
+    def _later_owned_scope_hits(
+        self, current_ticket: str, changed_files: list[str],
+    ) -> list[tuple[str, str]]:
+        later_owned = self._later_ticket_owned_paths(current_ticket)
+        return sorted({
+            (path, owner)
+            for path in changed_files
+            for owned_path, owner in later_owned
+            if (
+                path == owned_path
+                or path.startswith(owned_path.rstrip("/") + "/")
+                or path.startswith(owned_path + ".")
+            )
+        })
+
+    def _later_owned_scope_authorization_error(
+        self, state: dict[str, Any], active: dict[str, Any],
+        later_hits: list[tuple[str, str]],
+    ) -> str | None:
+        authorization = active.get("later_owned_scope_authorization")
+        if not isinstance(authorization, dict):
+            return "authorization is missing"
+        try:
+            record = read_json(self.scope_recovery_path)
+        except SupervisorError:
+            return "durable scope-recovery receipt is missing or malformed"
+        expected_hits = [
+            {"path": path, "owner": owner} for path, owner in later_hits
+        ]
+        if (
+            set(authorization) != {
+                "status", "record_checksum", "ticket", "run_id", "starting_head",
+                "fingerprint", "later_hits",
+            }
+            or authorization.get("status") != "approved"
+            or authorization.get("record_checksum") != content_checksum(record)
+            or authorization.get("ticket") != state.get("current_ticket")
+            or authorization.get("ticket") != active.get("ticket")
+            or authorization.get("run_id") != active.get("id")
+            or authorization.get("starting_head") != active.get("starting_head")
+            or authorization.get("fingerprint") != active.get("post_invocation_fingerprint")
+            or authorization.get("later_hits") != expected_hits
+            or record.get("status") != "applied"
+            or record.get("ticket") != authorization.get("ticket")
+            or record.get("run_id") != authorization.get("run_id")
+            or record.get("starting_head") != authorization.get("starting_head")
+            or record.get("fingerprint") != authorization.get("fingerprint")
+            or record.get("later_hits") != expected_hits
+            or record.get("candidate_identity") != state.get("engine_requirement")
+        ):
+            return "authorization does not match the exact checkpoint and durable receipt"
+        return None
 
     def _ticket_owned_paths(self, ticket: str) -> list[str]:
         try:
@@ -9059,6 +9767,48 @@ def build_parser() -> argparse.ArgumentParser:
     engine_activate.add_argument("--candidate", type=Path, required=True)
     engine_activate.add_argument("--go", action="store_true", help="record the explicit human go decision")
     engine_update_sub.add_parser("rollback", help="restore the archived binding after stopping the new generation")
+    scope_recovery = subparsers.add_parser(
+        "scope-recovery",
+        help="qualify and recover one exact later-owned SCOPE_BLOCKED checkpoint",
+    )
+    scope_recovery_sub = scope_recovery.add_subparsers(dest="scope_recovery_command", required=True)
+    scope_recovery_dry_run = scope_recovery_sub.add_parser(
+        "dry-run", help="qualify the exact checkpoint and isolated successor without writes",
+    )
+    scope_recovery_dry_run.add_argument("--expected-run-id", required=True)
+    scope_recovery_dry_run.add_argument("--expected-fingerprint", required=True)
+    scope_recovery_apply = scope_recovery_sub.add_parser(
+        "apply", help="archive, bind the successor, and authorize one exact scope recheck",
+    )
+    scope_recovery_apply.add_argument("--expected-run-id", required=True)
+    scope_recovery_apply.add_argument("--expected-fingerprint", required=True)
+    scope_recovery_apply.add_argument("--source-checksum", required=True)
+    scope_recovery_apply.add_argument("--note", required=True)
+    scope_recovery_apply.add_argument("--go", action="store_true")
+    scope_recovery_sub.add_parser(
+        "rollback", help="restore the exact pre-handoff checkpoint before resume",
+    )
+    plan_amendment = subparsers.add_parser(
+        "plan-amendment",
+        help="insert one approved fix ticket before an unchanged pending materialized suffix",
+    )
+    plan_amendment_sub = plan_amendment.add_subparsers(dest="plan_amendment_command", required=True)
+    plan_amendment_dry_run = plan_amendment_sub.add_parser(
+        "dry-run", help="qualify an append-only insertion amendment without writes",
+    )
+    plan_amendment_dry_run.add_argument("--plan", type=Path, required=True)
+    plan_amendment_dry_run.add_argument("--fix-ticket", type=Path, required=True)
+    plan_amendment_apply = plan_amendment_sub.add_parser(
+        "apply", help="archive the current frontier and append the approved successor epoch",
+    )
+    plan_amendment_apply.add_argument("--plan", type=Path, required=True)
+    plan_amendment_apply.add_argument("--fix-ticket", type=Path, required=True)
+    plan_amendment_apply.add_argument("--source-checksum", required=True)
+    plan_amendment_apply.add_argument("--note", required=True)
+    plan_amendment_apply.add_argument("--go", action="store_true")
+    plan_amendment_sub.add_parser(
+        "rollback", help="restore the exact pre-amendment frontier before the fix starts",
+    )
     legacy_cutover = subparsers.add_parser("legacy-cutover", help="opt-in qualified 1.x to 2.0 conversion and binding handoff")
     legacy_cutover_sub = legacy_cutover.add_subparsers(dest="legacy_cutover_command", required=True)
     legacy_dry_run = legacy_cutover_sub.add_parser("dry-run", help="inspect the supported 1.x HUMAN_GATE without writing")
@@ -9290,6 +10040,44 @@ def main(arguments: list[str] | None = None) -> int:
                     result = supervisor.apply_state_migration()
                 else:
                     result = supervisor.rollback_state_migration()
+            print_json(result)
+            return 0
+        if args.command == "plan-amendment":
+            if args.plan_amendment_command == "dry-run":
+                print_json(supervisor.insertion_plan_amendment_dry_run(
+                    args.plan, args.fix_ticket,
+                ))
+                return 0
+            with supervisor.operation_lock():
+                if args.plan_amendment_command == "apply":
+                    result = supervisor.apply_insertion_plan_amendment(
+                        args.plan,
+                        args.fix_ticket,
+                        args.source_checksum,
+                        args.note,
+                        go=args.go,
+                    )
+                else:
+                    result = supervisor.rollback_insertion_plan_amendment()
+            print_json(result)
+            return 0
+        if args.command == "scope-recovery":
+            if args.scope_recovery_command == "dry-run":
+                print_json(supervisor.later_scope_recovery_dry_run(
+                    args.expected_run_id, args.expected_fingerprint,
+                ))
+                return 0
+            with supervisor.operation_lock():
+                if args.scope_recovery_command == "apply":
+                    result = supervisor.apply_later_scope_recovery(
+                        args.expected_run_id,
+                        args.expected_fingerprint,
+                        args.source_checksum,
+                        args.note,
+                        go=args.go,
+                    )
+                else:
+                    result = supervisor.rollback_later_scope_recovery()
             print_json(result)
             return 0
         if args.command == "engine-update":

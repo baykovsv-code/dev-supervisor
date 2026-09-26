@@ -118,6 +118,57 @@ validate the exact checkpoint, one currently configured failed check, and its du
 log. That validation invokes no model and consumes no quota; any subsequent repair must
 pass the full verification, scope, and commit gates.
 
+### Exact later-scope recovery
+
+`scope-recovery` is not an ordinary scope override. It is available only from the
+isolated successor engine for one verified `SCOPE_BLOCKED` implementation checkpoint
+whose changed paths are owned only by later tickets. First preserve the dry-run receipt:
+
+```bash
+./dev scope-recovery dry-run --expected-run-id <run-id> --expected-fingerprint <fingerprint>
+```
+
+It binds the run, starting HEAD, full checkpoint fingerprint, report, verification,
+consumed quota authorization, durable run artifacts, current binding/host writer lease,
+and exact later-ticket path ownership. Any changed checkpoint, protected or unrelated
+path, stale artifact, contradictory ownership, or failed successor test stops without
+writing. After a human records a bounded meaningful decision note and says go, apply
+the exact dry-run receipt:
+
+```bash
+./dev scope-recovery apply --expected-run-id <run-id> --expected-fingerprint <fingerprint> \
+  --source-checksum <receipt> --note "<human decision>" --go
+```
+
+Apply archives first, then transfers the immutable engine binding and host-local writer
+lease, writes a durable receipt, and returns the unchanged checkpoint to `SCOPE_PENDING`.
+The ordinary scope gate runs again independently; the receipt neither waives scope,
+verification, quota, Git, nor commit checks, and invokes no duplicate model call.
+Before that run advances, `./dev scope-recovery rollback` restores the exact archived
+state, binding, and writer owner. Once the recovered checkpoint advances, rollback is
+closed; preserve its evidence and stop on any mismatch.
+
+### Insertion-only plan amendment
+
+`plan-amendment` is available only at a clean, quiescent `READY` or pre-invocation
+quota frontier with HEAD equal to the last Supervisor commit. It accepts exactly one
+previously unseen `F` ticket before the byte-identical pending suffix of an incomplete
+materialized epoch with an exact completed prefix:
+
+```bash
+./dev plan-amendment dry-run --plan <approved-plan> --fix-ticket <f-ticket>
+./dev plan-amendment apply --plan <approved-plan> --fix-ticket <f-ticket> \
+  --source-checksum <receipt> --note "<human decision>" --go
+```
+
+The old plan, requirements index, tickets, and completed-ticket evidence remain
+byte-identical in the superseded epoch. Apply archives the frontier first, appends a
+linked immutable successor epoch, and makes the inserted fix the only next ticket.
+It rejects dirty/nonquiescent state, a changed HEAD, non-exact prefix or suffix,
+duplicate/non-`F` tickets, malformed fix evidence, or any altered materialization.
+`./dev plan-amendment rollback` is allowed only before the inserted fix starts and
+restores the exact prior state and materialization; otherwise it fails closed.
+
 `./dev recover-protected-snapshot` is a narrow historical recovery command, not a
 general override. Use it only when its own status conditions prove the protected-control
 snapshot defect; it checks the exact ticket, runs, HEAD, branch, dirty bytes, reports,

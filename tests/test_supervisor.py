@@ -4259,6 +4259,74 @@ class ImmutableEngineUpdateTests(unittest.TestCase):
         git(candidate, "commit", "-m", "Candidate engine")
         return candidate
 
+    def _later_owned_scope_checkpoint(self):
+        current_engine = self._candidate_engine()
+        (current_engine / "README.md").write_text(
+            (current_engine / "README.md").read_text(encoding="utf-8") + "\nPredecessor fixture.\n",
+            encoding="utf-8",
+        )
+        git(current_engine, "add", "README.md")
+        git(current_engine, "commit", "-m", "Distinguish predecessor engine")
+        candidate = self._candidate_engine()
+        exclude = self.root / ".git/info/exclude"
+        exclude.write_text(
+            exclude.read_text(encoding="utf-8")
+            + current_engine.relative_to(self.root).parts[0] + "/\n"
+            + candidate.relative_to(self.root).parts[0] + "/\n",
+            encoding="utf-8",
+        )
+        (self.root / "docs/architecture/tickets/10-search.md").write_text(
+            "# T10: search\n\n- Files/modules: `apps/search.py`.\n",
+            encoding="utf-8",
+        )
+        (self.root / "docs/architecture/tickets/12-commitments.md").write_text(
+            "# T12: commitments\n\n- Files/modules: `tests/fixtures/`.\n",
+            encoding="utf-8",
+        )
+        git(self.root, "add", "docs/architecture/tickets")
+        git(self.root, "commit", "-m", "Declare disjoint ticket ownership")
+        policy = deepcopy(self.policy)
+        policy["milestones"] = [{
+            "name": "test gate", "after_ticket": "T10", "before_ticket": "T12", "message": "stop",
+        }]
+        runner = FakeModelRunner([
+            SupervisorTests.write_action(
+                self,
+                "tests/fixtures/later-owned.json",
+                report("implementation", "T10", files=["tests/fixtures/later-owned.json"]),
+            ),
+        ])
+        current = Supervisor(
+            self.root, policy=policy, assets_dir=current_engine,
+            model_runner=runner, command_runner=FakeCommandRunner(), now=lambda: NOW,
+        )
+        current.runtime.mkdir()
+        current.save_state(current.initial_state())
+        current_identity = current._engine_identity(current_engine)
+        current.engine_binding_path.write_text(json.dumps({
+            "version": 2,
+            "engine_root": str(current_engine),
+            "identity": current_identity,
+            "compatibility": {
+                "state": {"minimum": 7, "maximum": 7},
+                "policy": {"minimum": 3, "maximum": 3},
+                "protocol": {"minimum": 1, "maximum": 1},
+            },
+        }), encoding="utf-8")
+        current.host_owner_path.write_text(json.dumps({
+            "version": 1, "host_id": "test-host", "lease_id": "predecessor-lease",
+            "engine_build_id": current_identity["build_id"],
+        }), encoding="utf-8")
+        SupervisorTests.set_quota(self, current)
+        state = current.run()
+        self.assertEqual(state["phase"], "SCOPE_BLOCKED")
+        self.assertIn("explicitly assigned to later tickets", state["message"])
+        successor = Supervisor(
+            self.root, policy=policy, assets_dir=candidate,
+            model_runner=runner, command_runner=FakeCommandRunner(), now=lambda: NOW,
+        )
+        return current, successor, candidate, state
+
     def test_immutable_binding_requires_host_local_lease_and_stale_host_cannot_write(self):
         candidate = self._candidate_engine()
         supervisor = self.make_supervisor()
@@ -4316,6 +4384,85 @@ class ImmutableEngineUpdateTests(unittest.TestCase):
         try:
             with self.assertRaisesRegex(SupervisorError, "incompatible"):
                 supervisor.save_state(state)
+        finally:
+            os.environ.pop("DEV_SUPERVISOR_HOST_ID", None)
+
+    def test_exact_later_owned_scope_recovery_hands_off_rechecks_and_commits(self):
+        os.environ["DEV_SUPERVISOR_HOST_ID"] = "test-host"
+        try:
+            _, successor, candidate, blocked = self._later_owned_scope_checkpoint()
+            run_id = blocked["active_run"]["id"]
+            fingerprint = blocked["active_run"]["post_invocation_fingerprint"]
+            dry_run = successor.later_scope_recovery_dry_run(
+                run_id, fingerprint, run_tests=False,
+            )
+            applied = successor.apply_later_scope_recovery(
+                run_id, fingerprint, dry_run["source_checksum"],
+                "Operator approved the exact ownership transfer.", go=True, run_tests=False,
+            )
+
+            self.assertEqual(applied["status"], "activated")
+            rebound = json.loads(successor.engine_binding_path.read_text(encoding="utf-8"))
+            self.assertEqual(rebound["engine_root"], str(candidate))
+            pending = successor.load_state(read_only=True)
+            self.assertEqual(pending["phase"], "SCOPE_PENDING")
+            self.assertEqual(
+                pending["active_run"]["later_owned_scope_authorization"]["run_id"], run_id,
+            )
+
+            completed = successor.resume()
+
+            self.assertEqual(completed["phase"], "HUMAN_GATE")
+            self.assertIn("T10", completed["completed_tickets"])
+            self.assertEqual(git(self.root, "status", "--short", "--untracked-files=all"), "")
+            with self.assertRaisesRegex(SupervisorError, "advanced"):
+                successor.rollback_later_scope_recovery()
+        finally:
+            os.environ.pop("DEV_SUPERVISOR_HOST_ID", None)
+
+    def test_later_owned_scope_recovery_rolls_back_before_resume(self):
+        os.environ["DEV_SUPERVISOR_HOST_ID"] = "test-host"
+        try:
+            current, successor, _, blocked = self._later_owned_scope_checkpoint()
+            source_state = current.state_path.read_bytes()
+            source_binding = json.loads(current.engine_binding_path.read_text(encoding="utf-8"))
+            source_owner = json.loads(current.host_owner_path.read_text(encoding="utf-8"))
+            run_id = blocked["active_run"]["id"]
+            fingerprint = blocked["active_run"]["post_invocation_fingerprint"]
+            dry_run = successor.later_scope_recovery_dry_run(
+                run_id, fingerprint, run_tests=False,
+            )
+            successor.apply_later_scope_recovery(
+                run_id, fingerprint, dry_run["source_checksum"],
+                "Operator approved a reversible handoff.", go=True, run_tests=False,
+            )
+
+            result = successor.rollback_later_scope_recovery()
+
+            self.assertEqual(result["status"], "rolled_back")
+            self.assertEqual(current.state_path.read_bytes(), source_state)
+            self.assertEqual(
+                json.loads(current.engine_binding_path.read_text(encoding="utf-8")), source_binding,
+            )
+            self.assertEqual(
+                json.loads(current.host_owner_path.read_text(encoding="utf-8")), source_owner,
+            )
+        finally:
+            os.environ.pop("DEV_SUPERVISOR_HOST_ID", None)
+
+    def test_later_owned_scope_recovery_rejects_a_changed_checkpoint(self):
+        os.environ["DEV_SUPERVISOR_HOST_ID"] = "test-host"
+        try:
+            _, successor, _, blocked = self._later_owned_scope_checkpoint()
+            (self.root / "tests/fixtures/later-owned.json").write_text(
+                "changed after scope gate\n", encoding="utf-8",
+            )
+            with self.assertRaisesRegex(SupervisorError, "stale or contradictory"):
+                successor.later_scope_recovery_dry_run(
+                    blocked["active_run"]["id"],
+                    blocked["active_run"]["post_invocation_fingerprint"],
+                    run_tests=False,
+                )
         finally:
             os.environ.pop("DEV_SUPERVISOR_HOST_ID", None)
 
@@ -4622,7 +4769,7 @@ class BacklogCycleTests(unittest.TestCase):
         git(self.root, "add", ".")
         git(self.root, "commit", "-m", "Seed")
         policy = json.loads((MODULE_PATH.parent / "tests/fixtures/reference-policy.json").read_text(encoding="utf-8"))
-        policy.update({"implementation_plan": "docs/architecture/implementation-plan.md", "authoritative_documents": ["docs/architecture/implementation-plan.md"], "bootstrap_ticket": "T01", "initial_completed_tickets": [], "verification_commands": []})
+        policy.update({"implementation_plan": "docs/architecture/implementation-plan.md", "authoritative_documents": ["docs/architecture/implementation-plan.md"], "bootstrap_ticket": "T01", "initial_completed_tickets": [], "verification_commands": [], "expected_branch": "main"})
         self.supervisor = Supervisor(self.root, policy=policy, assets_dir=MODULE_PATH.parent, model_runner=FakeModelRunner([]), command_runner=FakeCommandRunner(), now=lambda: NOW)
         state = self.supervisor.load_state()
         state["phase"] = "PLAN_COMPLETED"
@@ -4683,6 +4830,118 @@ class BacklogCycleTests(unittest.TestCase):
             self.supervisor.backlog_cycle_status()
         state = self.supervisor.load_state()
         self.assertEqual((state["phase"], len(state["plan_epochs"])), ("PLAN_COMPLETED", 1))
+
+    def test_insertion_plan_amendment_appends_successor_epoch_and_rolls_back(self):
+        selection = self._write(
+            "selection.json",
+            {"version": 1, "items": [{"id": "B-1", "source": "BACKLOG.md", "summary": "bounded follow-up"}]},
+        )
+        cycle = self.supervisor.begin_backlog_cycle(selection)
+        source_digest = cycle["selection"]["digest"]
+        requirements = self._write("requirements.json", {
+            "version": 1, "kind": "requirements", "selection_digest": source_digest,
+            "parent_revision_digest": source_digest,
+            "content": {
+                "requirements": ["R"], "dependencies": ["none"], "duplicates": ["none"],
+                "readiness": ["ready"], "architecture_impact": ["review required"],
+                "outcomes": [{"item_id": "B-1", "disposition": "accepted", "reason": "bounded"}],
+            },
+        })
+        requirements_digest = self.supervisor.submit_backlog_revision(requirements)["revisions"][-1]["digest"]
+        self.supervisor.approve_backlog_requirements(requirements_digest)
+        architecture = self._write("architecture.json", {
+            "version": 1, "kind": "architecture", "selection_digest": source_digest,
+            "parent_revision_digest": requirements_digest,
+            "content": {
+                "alternatives": ["simple"], "selected_design": "minimal",
+                "complexity_rationale": "bounded", "architecture_delta": ["none"], "risks": ["review"],
+            },
+        })
+        architecture_digest = self.supervisor.submit_backlog_revision(architecture)["revisions"][-1]["digest"]
+        self.supervisor.approve_backlog_architecture(requirements_digest, architecture_digest)
+        plan = self.root / "next-plan.md"
+        index = self.root / "next-index.md"
+        tickets = self.root / "next-tickets"
+        tickets.mkdir()
+        plan.write_text(
+            "| Milestone | Tickets | Gate |\n|---|---|---|\n| 2 next | 31 → 32 | ready |\n",
+            encoding="utf-8",
+        )
+        index.write_text("# next index\n", encoding="utf-8")
+        (tickets / "31-first.md").write_text("# T31\n", encoding="utf-8")
+        (tickets / "32-second.md").write_text("# T32\n", encoding="utf-8")
+        lineage = self._write(
+            "lineage.json",
+            {"version": 1, "ticket_sources": {"T31": ["B-1"], "T32": ["B-1"]}},
+        )
+        self.supervisor.materialize_backlog_epoch(plan, index, tickets, lineage)
+        state = self.supervisor.load_state()
+        state.update({
+            "phase": "READY", "current_ticket": "T32", "completed_tickets": ["T31"],
+            "last_commit": git(self.root, "rev-parse", "HEAD"), "active_run": None,
+            "pending_commit": None, "starting_head": None,
+        })
+        self.supervisor.save_state(state)
+        source_state = json.loads(self.supervisor.state_path.read_text(encoding="utf-8"))
+        source_cycle = json.loads(self.supervisor.backlog_cycle_path.read_text(encoding="utf-8"))
+        old_plan = self.supervisor._backlog_cycle_artifact(source_cycle["materialization"]["plan"])
+        old_plan_bytes = old_plan.read_bytes()
+        amendment_plan = self.root / "amendment-plan.md"
+        fix_ticket = self.root / "f30-scope-recovery.md"
+        amendment_plan.write_text(
+            "| Milestone | Tickets | Gate |\n|---|---|---|\n| 1 fix | F30 → 32 | ready |\n",
+            encoding="utf-8",
+        )
+        fix_ticket.write_text(
+            "# F30: scope recovery\n\n- Files/modules: `supervisor.py`, `tests/`.\n\n"
+            "## Documentation impact\n\n`Required — document recovery.`\n",
+            encoding="utf-8",
+        )
+        # Operator inputs live outside the tracked product for this test.
+        (self.root / ".gitignore").write_text(".dev-supervisor/\n", encoding="utf-8")
+        git(self.root, "add", ".")
+        git(self.root, "commit", "-m", "Prepare operator amendment inputs")
+        state = self.supervisor.load_state()
+        state["last_commit"] = git(self.root, "rev-parse", "HEAD")
+        self.supervisor.save_state(state)
+        source_state = json.loads(self.supervisor.state_path.read_text(encoding="utf-8"))
+        self.assertEqual(git(self.root, "status", "--short", "--untracked-files=all"), "")
+        dry_run = self.supervisor.insertion_plan_amendment_dry_run(amendment_plan, fix_ticket)
+        amendment_plan.write_text(
+            "| Milestone | Tickets | Gate |\n|---|---|---|\n| 1 fix | F30 → 32 | changed |\n",
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(SupervisorError, "clean expected branch"):
+            self.supervisor.apply_insertion_plan_amendment(
+                amendment_plan, fix_ticket, dry_run["source_checksum"],
+                "Reject a changed amendment input.", go=True,
+            )
+        amendment_plan.write_text(
+            "| Milestone | Tickets | Gate |\n|---|---|---|\n| 1 fix | F30 → 32 | ready |\n",
+            encoding="utf-8",
+        )
+
+        applied = self.supervisor.apply_insertion_plan_amendment(
+            amendment_plan, fix_ticket, dry_run["source_checksum"],
+            "Insert one audited safety fix before the unchanged suffix.", go=True,
+        )
+
+        amended = self.supervisor.load_state(read_only=True)
+        self.assertEqual((amended["phase"], amended["current_ticket"]), ("READY", "F30"))
+        self.assertEqual(self.supervisor._plan_tickets(), ["F30", "T32"])
+        self.assertEqual(amended["plan_epochs"][-2]["completion"]["completed_prefix"], ["T31"])
+        self.assertEqual(amended["plan_epochs"][-1]["prior_epoch_id"], dry_run["source_epoch_id"])
+        self.assertEqual(old_plan.read_bytes(), old_plan_bytes)
+        self.assertEqual(applied["status"], "applied")
+
+        rolled_back = self.supervisor.rollback_insertion_plan_amendment()
+
+        self.assertEqual(rolled_back["status"], "rolled_back")
+        restored = json.loads(self.supervisor.state_path.read_text(encoding="utf-8"))
+        restored_cycle = json.loads(self.supervisor.backlog_cycle_path.read_text(encoding="utf-8"))
+        self.assertEqual(restored, source_state)
+        self.assertEqual(restored_cycle, source_cycle)
+        self.assertEqual(self.supervisor._plan_tickets(), ["T31", "T32"])
 
 
 class ExistingProjectAdmissionTests(unittest.TestCase):
