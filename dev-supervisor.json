@@ -10,7 +10,7 @@
   ],
   "bootstrap_ticket": "T00",
   "capabilities": {
-    "repository_push": false,
+    "repository_push": true,
     "self_modification": false,
     "user_requested_modification": false
   },
