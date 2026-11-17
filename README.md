@@ -10,6 +10,11 @@ ordinary work, gates, safe stopping, and recovery. The English guide is normativ
 the reviewed Russian operational counterpart is
 [available in Russian](docs/operator-guide.ru.md).
 
+The dated AS-IS inventory and OpenSpec comparison are available in
+[English](docs/architecture/as-is-openspec-inventory.md) and
+[Russian](docs/architecture/as-is-openspec-inventory.ru.md). They assess the current
+controller and a candidate operating model; the migration roadmap is still pending.
+
 ## Requirements
 
 - Python 3

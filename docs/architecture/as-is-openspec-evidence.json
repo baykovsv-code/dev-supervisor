@@ -1,0 +1,1188 @@
+{
+  "baseline_commit": "07bb23209aa5141fd1d2b606c06c852bdc2b8e7f",
+  "date": "2026-11-18",
+  "method": "git ls-files; UTF-8 splitlines; Python ast: FunctionDef, add_parser calls, literal top-level constants. Hashes of tracked files only; generated skills excluded from file manifest and inspected separately. No runtime directory inspected.",
+  "supervisor_lines": 10184,
+  "supervisor_functions": 291,
+  "cli": [
+    {
+      "group": "subparsers",
+      "command": "init",
+      "line": 9729
+    },
+    {
+      "group": "subparsers",
+      "command": "admission",
+      "line": 9733
+    },
+    {
+      "group": "admission_sub",
+      "command": "assess",
+      "line": 9736
+    },
+    {
+      "group": "admission_sub",
+      "command": "begin",
+      "line": 9739
+    },
+    {
+      "group": "admission_sub",
+      "command": "status",
+      "line": 9742
+    },
+    {
+      "group": "admission_sub",
+      "command": "approve",
+      "line": 9743
+    },
+    {
+      "group": "admission_sub",
+      "command": "index",
+      "line": 9746
+    },
+    {
+      "group": "subparsers",
+      "command": "policy-migration-dry-run",
+      "line": 9748
+    },
+    {
+      "group": "subparsers",
+      "command": "state-migration-dry-run",
+      "line": 9753
+    },
+    {
+      "group": "subparsers",
+      "command": "state-migration-apply",
+      "line": 9756
+    },
+    {
+      "group": "subparsers",
+      "command": "state-migration-rollback",
+      "line": 9759
+    },
+    {
+      "group": "subparsers",
+      "command": "engine-update",
+      "line": 9762
+    },
+    {
+      "group": "engine_update_sub",
+      "command": "dry-run",
+      "line": 9764
+    },
+    {
+      "group": "engine_update_sub",
+      "command": "activate",
+      "line": 9766
+    },
+    {
+      "group": "engine_update_sub",
+      "command": "rollback",
+      "line": 9769
+    },
+    {
+      "group": "subparsers",
+      "command": "scope-recovery",
+      "line": 9770
+    },
+    {
+      "group": "scope_recovery_sub",
+      "command": "dry-run",
+      "line": 9775
+    },
+    {
+      "group": "scope_recovery_sub",
+      "command": "apply",
+      "line": 9780
+    },
+    {
+      "group": "scope_recovery_sub",
+      "command": "rollback",
+      "line": 9788
+    },
+    {
+      "group": "subparsers",
+      "command": "plan-amendment",
+      "line": 9791
+    },
+    {
+      "group": "plan_amendment_sub",
+      "command": "dry-run",
+      "line": 9796
+    },
+    {
+      "group": "plan_amendment_sub",
+      "command": "apply",
+      "line": 9801
+    },
+    {
+      "group": "plan_amendment_sub",
+      "command": "rollback",
+      "line": 9809
+    },
+    {
+      "group": "subparsers",
+      "command": "legacy-cutover",
+      "line": 9812
+    },
+    {
+      "group": "legacy_cutover_sub",
+      "command": "dry-run",
+      "line": 9814
+    },
+    {
+      "group": "legacy_cutover_sub",
+      "command": "apply",
+      "line": 9816
+    },
+    {
+      "group": "legacy_cutover_sub",
+      "command": "rollback",
+      "line": 9820
+    },
+    {
+      "group": "subparsers",
+      "command": "status",
+      "line": 9821
+    },
+    {
+      "group": "subparsers",
+      "command": "run",
+      "line": 9822
+    },
+    {
+      "group": "subparsers",
+      "command": "resume",
+      "line": 9823
+    },
+    {
+      "group": "subparsers",
+      "command": "recover-environment",
+      "line": 9824
+    },
+    {
+      "group": "subparsers",
+      "command": "recover-verification-failure",
+      "line": 9828
+    },
+    {
+      "group": "subparsers",
+      "command": "recover-generic-verification-failure",
+      "line": 9832
+    },
+    {
+      "group": "subparsers",
+      "command": "recover-protected-snapshot",
+      "line": 9836
+    },
+    {
+      "group": "subparsers",
+      "command": "reconcile-verification-evidence",
+      "line": 9840
+    },
+    {
+      "group": "subparsers",
+      "command": "stop",
+      "line": 9844
+    },
+    {
+      "group": "subparsers",
+      "command": "evidence",
+      "line": 9845
+    },
+    {
+      "group": "evidence_sub",
+      "command": "check",
+      "line": 9847
+    },
+    {
+      "group": "subparsers",
+      "command": "quota",
+      "line": 9849
+    },
+    {
+      "group": "quota_sub",
+      "command": "show",
+      "line": 9851
+    },
+    {
+      "group": "quota_sub",
+      "command": "migration-dry-run",
+      "line": 9852
+    },
+    {
+      "group": "quota_sub",
+      "command": "migration-apply",
+      "line": 9853
+    },
+    {
+      "group": "quota_sub",
+      "command": "migration-rollback",
+      "line": 9854
+    },
+    {
+      "group": "quota_sub",
+      "command": "set",
+      "line": 9855
+    },
+    {
+      "group": "subparsers",
+      "command": "gate",
+      "line": 9858
+    },
+    {
+      "group": "gate_sub",
+      "command": "release",
+      "line": 9860
+    },
+    {
+      "group": "gate_sub",
+      "command": "accept-cutover",
+      "line": 9862
+    },
+    {
+      "group": "gate_sub",
+      "command": "reconcile-plan",
+      "line": 9867
+    },
+    {
+      "group": "gate_sub",
+      "command": "adopt-architecture",
+      "line": 9872
+    },
+    {
+      "group": "subparsers",
+      "command": "cold-start",
+      "line": 9877
+    },
+    {
+      "group": "cold_start_sub",
+      "command": "begin",
+      "line": 9879
+    },
+    {
+      "group": "cold_start_sub",
+      "command": "status",
+      "line": 9881
+    },
+    {
+      "group": "cold_start_sub",
+      "command": "submit",
+      "line": 9882
+    },
+    {
+      "group": "cold_start_sub",
+      "command": "correct",
+      "line": 9884
+    },
+    {
+      "group": "cold_start_sub",
+      "command": "approve-requirements",
+      "line": 9886
+    },
+    {
+      "group": "cold_start_sub",
+      "command": "approve-architecture",
+      "line": 9888
+    },
+    {
+      "group": "cold_start_sub",
+      "command": "plan",
+      "line": 9891
+    },
+    {
+      "group": "subparsers",
+      "command": "backlog",
+      "line": 9895
+    },
+    {
+      "group": "backlog_sub",
+      "command": "begin",
+      "line": 9897
+    },
+    {
+      "group": "backlog_sub",
+      "command": "status",
+      "line": 9899
+    },
+    {
+      "group": "backlog_sub",
+      "command": "submit",
+      "line": 9900
+    },
+    {
+      "group": "backlog_sub",
+      "command": "approve-requirements",
+      "line": 9902
+    },
+    {
+      "group": "backlog_sub",
+      "command": "approve-architecture",
+      "line": 9904
+    },
+    {
+      "group": "backlog_sub",
+      "command": "materialize",
+      "line": 9907
+    },
+    {
+      "group": "subparsers",
+      "command": "improvement",
+      "line": 9912
+    },
+    {
+      "group": "improvement_sub",
+      "command": "request",
+      "line": 9914
+    },
+    {
+      "group": "improvement_sub",
+      "command": "status",
+      "line": 9918
+    },
+    {
+      "group": "improvement_sub",
+      "command": "submit-architecture",
+      "line": 9919
+    },
+    {
+      "group": "improvement_sub",
+      "command": "approve-architecture",
+      "line": 9921
+    },
+    {
+      "group": "improvement_sub",
+      "command": "materialize-plan",
+      "line": 9923
+    },
+    {
+      "group": "improvement_sub",
+      "command": "stage-successor",
+      "line": 9926
+    }
+  ],
+  "constants": {
+    "ENGINE_BINDING_VERSION": 2,
+    "ENGINE_PROTOCOL_VERSION": 1,
+    "POLICY_VERSION": 3,
+    "TERMINAL_STATES": [
+      "ARCHITECTURE_FAILED",
+      "DIAGNOSTIC_FAILED",
+      "GIT_BLOCKED",
+      "HUMAN_GATE",
+      "IMPLEMENTATION_FAILED",
+      "INTERRUPTED",
+      "INVOCATION_FAILED",
+      "MIGRATION_BLOCKED",
+      "PERIODIC_CHECKPOINT",
+      "PLAN_COMPLETED",
+      "QUOTA_CHECK_REQUIRED",
+      "QUOTA_EXHAUSTED",
+      "QUOTA_LOW",
+      "REPORT_INVALID",
+      "SCOPE_BLOCKED",
+      "SUPERVISOR_REPAIR_FAILED",
+      "VERIFICATION_FAILED"
+    ],
+    "STATE_VERSION": 7,
+    "COLD_START_PHASES": [
+      "ARCHITECTURE_REVIEW",
+      "PLAN_READY",
+      "REQUIREMENTS_REVIEW"
+    ],
+    "BACKLOG_CYCLE_PHASES": [
+      "APPROVAL_WAIT",
+      "ARCHITECTURE_REVIEW",
+      "BACKLOG_REVIEW",
+      "READY_EPOCH"
+    ],
+    "IMPROVEMENT_PHASES": [
+      "APPROVAL_WAIT",
+      "ARCHITECTURE_IMPACT",
+      "BOUNDED_PLAN_READY",
+      "ESCALATED_NORMAL_CYCLE",
+      "SUCCESSOR_STAGED"
+    ]
+  },
+  "files": [
+    {
+      "path": ".gitignore",
+      "sha256": "b4fadb8bcec79b812063646e2f026aa9acb450edf20e4cdcc87f9d763e431cec",
+      "lines": 3
+    },
+    {
+      "path": "BACKLOG.md",
+      "sha256": "b314ee2b9d1b07298ba00c09134da525536bd8c4a7563160e8bd8fdd1c48ec48",
+      "lines": 30
+    },
+    {
+      "path": "README.md",
+      "sha256": "8c13b221809b88fcc4041b8c1d1df52058706a5dd58427c17257dc6e958fbbad",
+      "lines": 54
+    },
+    {
+      "path": "dev",
+      "sha256": "62e0fa26a3eb0c403a97f34459cb2e23b733ad10b8c60b92990aebd5af2318c9",
+      "lines": 62
+    },
+    {
+      "path": "dev-supervisor.json",
+      "sha256": "5891d24b8230488b471551bb79568e53d9b5f65379049d929f613c58e62a2d57",
+      "lines": 246
+    },
+    {
+      "path": "docs/architecture/architecture.md",
+      "sha256": "67762f9217ebd97e90ad06e0ab3a76630137055882f317f0dc5944d20576f7ea",
+      "lines": 288
+    },
+    {
+      "path": "docs/architecture/implementation-plan.md",
+      "sha256": "b01da5a5884832c05dd63da424736e3240c105e7d5236d8180b1cd350e66f632",
+      "lines": 50
+    },
+    {
+      "path": "docs/architecture/migration-analysis.md",
+      "sha256": "a57ae64f158d89fd4cecd0cea104458aa7bf1bc7841e40e08ad8e834aba15bfb",
+      "lines": 88
+    },
+    {
+      "path": "docs/architecture/requirements-index.md",
+      "sha256": "c84c95f73ef25cc5ae8495374becd2e69cbe422735974587c078d2d0e75dbd1f",
+      "lines": 70
+    },
+    {
+      "path": "docs/architecture/tickets/00-isolate-runtime-and-compatibility-harness.md",
+      "sha256": "15824edccebdd4a8892989409dcce4481da5032de9ec69beb79184c984e5b691",
+      "lines": 48
+    },
+    {
+      "path": "docs/architecture/tickets/01-policy-and-capability-contract.md",
+      "sha256": "186436463d23a7a184fcd12c2ef27133d2d6432670caa50f1f81cf60825f947d",
+      "lines": 43
+    },
+    {
+      "path": "docs/architecture/tickets/02-plan-completion-and-epochs.md",
+      "sha256": "bf3a746b90a43bb21d0ca8a949dc923f63d17f9096d06f48ed6329a03917a000",
+      "lines": 31
+    },
+    {
+      "path": "docs/architecture/tickets/03-versioned-state-and-events.md",
+      "sha256": "2d880a2718c160e3194591cee433cbf3784f37002413f23f99a954564b258371",
+      "lines": 34
+    },
+    {
+      "path": "docs/architecture/tickets/04-cold-start-review.md",
+      "sha256": "f118d1917b7adb4414b2e0768ebf4c92ac35e8e72e8194954c247fec3266e356",
+      "lines": 31
+    },
+    {
+      "path": "docs/architecture/tickets/05-existing-project-admission.md",
+      "sha256": "0eac36948ee9a214aa82373879fb0c90cdc13168395b01988e895ea352c68a28",
+      "lines": 36
+    },
+    {
+      "path": "docs/architecture/tickets/06-backlog-cycle-intake.md",
+      "sha256": "7e4be96b82068f54f4e92bb4719c616199459309d485365dd84d6f08ec5c25df",
+      "lines": 31
+    },
+    {
+      "path": "docs/architecture/tickets/07-observed-quota-policy.md",
+      "sha256": "b7d5b93ee1c7357fd35e77c6ac93ba1beb2df30224b66ea9036a5bc3a029a6c3",
+      "lines": 32
+    },
+    {
+      "path": "docs/architecture/tickets/08-controlled-improvement-and-self-development.md",
+      "sha256": "f73b666c281d943b014e154f5d18b5de3365e8ed4b8253d711fda9aa21222d40",
+      "lines": 32
+    },
+    {
+      "path": "docs/architecture/tickets/09-authorized-push-persistence.md",
+      "sha256": "7a3c4c40e44d89097712e0c13a469bab4220e0df9d95d1034a9053038efec722",
+      "lines": 64
+    },
+    {
+      "path": "docs/architecture/tickets/10-immutable-engine-update.md",
+      "sha256": "7fdbbe13b83bc8e99fae926edf890122d1d87abde0d1ab936475551f1896e686",
+      "lines": 34
+    },
+    {
+      "path": "docs/architecture/tickets/11-legacy-cutover.md",
+      "sha256": "74736fd4214803b887470d8347da77953adbc099c076d7312c04fd142fefec1b",
+      "lines": 45
+    },
+    {
+      "path": "docs/architecture/tickets/12-legacy-reference-qualification.md",
+      "sha256": "83b0e960039d416698136e5ba4fbf5e18496d9409f19a0014276388b6a6cbe07",
+      "lines": 51
+    },
+    {
+      "path": "docs/architecture/tickets/99-cutover-sentinel.md",
+      "sha256": "44c0ad8b2933b477f22ea3807859e4d3d6eaed64645bd0f8dc6bb727a0858bff",
+      "lines": 26
+    },
+    {
+      "path": "docs/architecture/tickets/f09-deterministic-verification-recovery.md",
+      "sha256": "4a623731b152f40643e5f853a0925e7ebe3467e5aeec80bc840dd6e1c9af28d1",
+      "lines": 63
+    },
+    {
+      "path": "docs/architecture/tickets/f10-documentation-governance.md",
+      "sha256": "a0623a278d701ad046d5f0fdd3247a14ab12cee7c2d9737e6a17fdfa07e242d1",
+      "lines": 66
+    },
+    {
+      "path": "docs/architecture/tickets/f11-protected-snapshot-recovery.md",
+      "sha256": "56ca41cc29ec72fae41b4d602d46a0c93e13d68db468a2ce0423af69c1f4c4ba",
+      "lines": 54
+    },
+    {
+      "path": "docs/backlog/macos-platform-qualification-2.1.md",
+      "sha256": "607fc94c5bb492ed612d1e325c89a296fba37529d16f4e6ae5d0a1f30264e214",
+      "lines": 76
+    },
+    {
+      "path": "docs/backlog/supervisor-2.1.md",
+      "sha256": "baf0c8405d42931d4f5cd6cdf2d040aeffde935d1d62f432dbe6f8ca2c302a8f",
+      "lines": 94
+    },
+    {
+      "path": "docs/dev-supervisor-discussion-2026-09-25.md",
+      "sha256": "100e3e6e39878bbe5202b4312f7f727ddc20f08c8b547e7870c1a438cb96c5b8",
+      "lines": 150
+    },
+    {
+      "path": "docs/documentation-governance.md",
+      "sha256": "a62f61a56d24f5a8a16de2ba5fb05fcaff1e37b500c49622cb92c68d16f62529",
+      "lines": 66
+    },
+    {
+      "path": "docs/operator-guide.md",
+      "sha256": "ca3555e1c56538a79e31a3591b2a913851777fc0e23121fecf2c67353f827a50",
+      "lines": 216
+    },
+    {
+      "path": "docs/operator-guide.ru.md",
+      "sha256": "9854fa5b419e216b6f98d361663573014e8a9bbc6bba9db913ab21c631edca84",
+      "lines": 228
+    },
+    {
+      "path": "docs/translation-manifest.json",
+      "sha256": "3af751516eac5bb50615a7f952e0fa044c1004eec65706e9f9d23df948dd6a97",
+      "lines": 12
+    },
+    {
+      "path": "openspec/changes/archive/.gitkeep",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "lines": 0
+    },
+    {
+      "path": "openspec/changes/inventory-as-is-for-openspec-evolution/.openspec.yaml",
+      "sha256": "9dce7645e8d23214043e04d1f4443f95ea5ca40f4320e09322b23b0ed2bc02ec",
+      "lines": 3
+    },
+    {
+      "path": "openspec/changes/inventory-as-is-for-openspec-evolution/design.md",
+      "sha256": "27a52fb08df35bd0536b7dee9046cf4b58b12467a051feed2ac161375f92218d",
+      "lines": 209
+    },
+    {
+      "path": "openspec/changes/inventory-as-is-for-openspec-evolution/proposal.md",
+      "sha256": "b7c47b0cd0d1d1aa56ad12e88b5385a2c818a0c5656c23829e5a6573b9bc3bdf",
+      "lines": 57
+    },
+    {
+      "path": "openspec/changes/inventory-as-is-for-openspec-evolution/tasks.md",
+      "sha256": "13a0588fa2afcda8912010fa9924fceb05ea05ed37d53723e196eeaaa12b6e3a",
+      "lines": 42
+    },
+    {
+      "path": "openspec/config.yaml",
+      "sha256": "f0082e9c22e8ce1d611c0f3b4d4915ce445e7ff2553cda6b713b6c25f390984c",
+      "lines": 32
+    },
+    {
+      "path": "openspec/specs/.gitkeep",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "lines": 0
+    },
+    {
+      "path": "prompts/architecture-blocker.md",
+      "sha256": "e8285d7e1dafbb018bc0eefe10011a54e43a81246618889d0fb00618a7d569d1",
+      "lines": 28
+    },
+    {
+      "path": "prompts/backlog-cycle-review.md",
+      "sha256": "10719eb22d47fb8b0cf1c9fed7ea6ebcdef9b5d21f0ef853215e941b0a229f76",
+      "lines": 9
+    },
+    {
+      "path": "prompts/cold-start-review.md",
+      "sha256": "9fefce23d1cd42d05bf1c0c5ff49d820f40dac26be7cb0a062bfb756f6451f64",
+      "lines": 10
+    },
+    {
+      "path": "prompts/diagnose.md",
+      "sha256": "878c60e689671a4de3b282452ed139f43705bb6a2a8da77ec0f290db29574dec",
+      "lines": 31
+    },
+    {
+      "path": "prompts/existing-project-admission.md",
+      "sha256": "38d2f6572492e795d61dcdaed4f5804ed791dca84277f86a9400fa902d3ccda1",
+      "lines": 15
+    },
+    {
+      "path": "prompts/implement.md",
+      "sha256": "91f59486d5ad69e99e110b56a3df2a9bd3fa0183dffc2078bb029b267f4e2e18",
+      "lines": 44
+    },
+    {
+      "path": "prompts/improvement-review.md",
+      "sha256": "816bad8f0d83b1aa30989efdcd9b562f62c0439e193dbb93dcff2224487edb00",
+      "lines": 10
+    },
+    {
+      "path": "prompts/supervisor-repair.md",
+      "sha256": "8d89b4de36f55b83084e9a63a58dd963e4583c9cbed2b8862f48fe7ab638b3ea",
+      "lines": 25
+    },
+    {
+      "path": "schemas/admission-manifest-v1.schema.json",
+      "sha256": "bc9a24ecf097cd579413a0471208f2088e3ec2d1fb47261326c6de6470324dfa",
+      "lines": 26,
+      "title": "Existing-project admission manifest v1",
+      "required": [
+        "version",
+        "source_documents",
+        "external_identifiers",
+        "mapping"
+      ]
+    },
+    {
+      "path": "schemas/agent-report.schema.json",
+      "sha256": "93e6044d8bf995a0248a32fecae4e6ea1c7c1936637dda57a4536c7ec39225c5",
+      "lines": 54,
+      "title": "Development supervisor agent report",
+      "required": [
+        "role",
+        "ticket",
+        "status",
+        "acceptance_passed",
+        "tests_passed",
+        "architecture_deviation",
+        "ambiguity",
+        "product_decision_required",
+        "next_ticket_safe",
+        "files_changed",
+        "summary",
+        "blockers",
+        "checks_run"
+      ]
+    },
+    {
+      "path": "schemas/approval-identity-v1.schema.json",
+      "sha256": "cfcdddde96e0947d4dd4d71a231a9cbcdb8e2ed74298bce88670d65900a97811",
+      "lines": 11,
+      "title": "Development Supervisor approval identity v1",
+      "required": [
+        "version",
+        "document_digests"
+      ]
+    },
+    {
+      "path": "schemas/audit-event-v1.schema.json",
+      "sha256": "902d00e52dedcfe1a9f4f12f1d21c8ee2cc972ef28366b5136885da5f2ccc3be",
+      "lines": 14,
+      "title": "Development Supervisor audit event v1",
+      "required": [
+        "version",
+        "event_id",
+        "predecessor_checksum",
+        "kind",
+        "payload"
+      ]
+    },
+    {
+      "path": "schemas/backlog-cycle-v1.schema.json",
+      "sha256": "a9bf130b0938074f25ead94ba5b288f979c5ffb4430bbbb6a7e950164f88f53e",
+      "lines": 16,
+      "title": "Development Supervisor backlog cycle v1",
+      "required": [
+        "version",
+        "phase",
+        "prior_epoch_id",
+        "selection",
+        "revisions",
+        "approval",
+        "materialization"
+      ]
+    },
+    {
+      "path": "schemas/cold-start-proposal-v1.schema.json",
+      "sha256": "bd97d184e902e8554c01e613de4913a91a2450ecd3b2307abc85822733a43e9b",
+      "lines": 15,
+      "title": "Development Supervisor cold-start proposal v1",
+      "required": [
+        "version",
+        "kind",
+        "source_specification_digest",
+        "parent_revision_digest",
+        "content"
+      ]
+    },
+    {
+      "path": "schemas/diagnostic-report.schema.json",
+      "sha256": "34331f11835a2c3ef6c3549064b090801686dc5af243291422a801055a6a553f",
+      "lines": 35,
+      "title": "Development supervisor diagnostic classification",
+      "required": [
+        "role",
+        "ticket",
+        "classification",
+        "rationale_summary",
+        "evidence_run_ids"
+      ]
+    },
+    {
+      "path": "schemas/engine-binding-v2.schema.json",
+      "sha256": "d53639e04558c19b0d821c28bdefe8d987c9f7a59576219854e617a918086c0c",
+      "lines": 38,
+      "title": "Immutable Development Supervisor engine binding v2",
+      "required": [
+        "version",
+        "engine_root",
+        "identity",
+        "compatibility"
+      ]
+    },
+    {
+      "path": "schemas/engine-identity-v1.schema.json",
+      "sha256": "fed1f4eda514c8b5fc2f0c37c95b2796975ee4a5cee42d6e95d6d287b7b7ddf6",
+      "lines": 12,
+      "title": "Development Supervisor engine identity and capabilities v1",
+      "required": [
+        "version",
+        "engine_id",
+        "capabilities"
+      ]
+    },
+    {
+      "path": "schemas/host-capability-grants-v1.schema.json",
+      "sha256": "3644a60404c01de18154c3c46dc65d12c71cccc5fd0215102559fbc38d72bf23",
+      "lines": 20,
+      "title": "Development Supervisor host capability grants v1",
+      "required": [
+        "version",
+        "capabilities"
+      ]
+    },
+    {
+      "path": "schemas/host-capability-grants-v2.schema.json",
+      "sha256": "c325fc883bc4252549efb60c8b6f52f1b7433297a998018ea0d82ccbac2f61a4",
+      "lines": 28,
+      "title": "Development Supervisor host capability grants v2",
+      "required": [
+        "version",
+        "capabilities",
+        "push_target"
+      ]
+    },
+    {
+      "path": "schemas/host-owner-v1.schema.json",
+      "sha256": "86f874e56b4cedde3c790ade35ef830e1bc3afba0da886371f8eb5cc1240425f",
+      "lines": 13,
+      "title": "Host-local Development Supervisor writer ownership v1",
+      "required": [
+        "version",
+        "host_id",
+        "lease_id",
+        "engine_build_id"
+      ]
+    },
+    {
+      "path": "schemas/improvement-architecture-impact-v1.schema.json",
+      "sha256": "18e4f36770b57259704fc27a644d4cb3455c2b7bde7c2a1f8a68451b9b6f67f8",
+      "lines": 24,
+      "title": "Explicit improvement architecture impact v1",
+      "required": [
+        "version",
+        "kind",
+        "request_digest",
+        "parent_revision_digest",
+        "content"
+      ]
+    },
+    {
+      "path": "schemas/plan-epoch-v1.schema.json",
+      "sha256": "2861ecca7a3d8c69c7aef09d93415576590e6e64d9c010865887823168d87d97",
+      "lines": 15,
+      "title": "Development Supervisor plan epoch v1",
+      "required": [
+        "epoch_id",
+        "prior_epoch_id",
+        "created_at",
+        "plan_digest",
+        "tickets",
+        "completion"
+      ]
+    },
+    {
+      "path": "schemas/project-policy-v2.schema.json",
+      "sha256": "ea47ed9e8ff66256477fbdbefb7c855eaff6b005390a19f9d7fcd8b4ca68058a",
+      "lines": 67,
+      "title": "Development Supervisor project policy v3",
+      "required": [
+        "version",
+        "expected_branch",
+        "bootstrap_ticket",
+        "initial_completed_tickets",
+        "implementation_plan",
+        "authoritative_documents",
+        "supervisor_control_paths",
+        "supervisor_repair_repository",
+        "models",
+        "quota",
+        "diagnostic",
+        "periodic_checkpoint",
+        "model_watchdog",
+        "milestones",
+        "verification_commands",
+        "supervisor_repair_verification_commands",
+        "host_verification_capabilities",
+        "ticket_verification_commands",
+        "evidence_check_commands",
+        "human_evidence_gates",
+        "implementation_forbidden_paths",
+        "architecture_allowed_paths",
+        "capabilities",
+        "improvement"
+      ]
+    },
+    {
+      "path": "schemas/supervisor-repair-report.schema.json",
+      "sha256": "91341b72e9f60773c8f7b163a9464cc2bec75396913c1787f08678724cc08d2a",
+      "lines": 24,
+      "title": "Development supervisor repair report",
+      "required": [
+        "role",
+        "ticket",
+        "status",
+        "summary",
+        "files_changed",
+        "checks_run"
+      ]
+    },
+    {
+      "path": "schemas/supervisor-state-v5.schema.json",
+      "sha256": "fdc782430bb240025fb4c5411dffefda21e3fa1eee90ce5c648b48e04bb05c91",
+      "lines": 46,
+      "title": "Development Supervisor runtime state v5",
+      "required": [
+        "version",
+        "phase",
+        "current_ticket",
+        "completed_tickets",
+        "plan_epochs",
+        "current_plan_epoch_id"
+      ]
+    },
+    {
+      "path": "schemas/supervisor-state-v6.schema.json",
+      "sha256": "78d7ebfed2f47bf92762463f6b9fce91c4eea84cd7e260fd000aad384c40e19b",
+      "lines": 28,
+      "title": "Development Supervisor runtime state v6",
+      "required": [
+        "version",
+        "phase",
+        "current_ticket",
+        "completed_tickets",
+        "plan_epochs",
+        "current_plan_epoch_id"
+      ]
+    },
+    {
+      "path": "schemas/supervisor-state-v7.schema.json",
+      "sha256": "20f77d46433ad368d32aed1b53cdee5747908923a003306fbb3b4333f017ae79",
+      "lines": 47,
+      "title": "Development Supervisor runtime state v7",
+      "required": [
+        "version",
+        "phase",
+        "current_ticket",
+        "completed_tickets",
+        "plan_epochs",
+        "current_plan_epoch_id",
+        "pending_push"
+      ]
+    },
+    {
+      "path": "scripts/check_documentation.py",
+      "sha256": "ad0606694670e369dde425b039ff5ce6496df121442cdd20fc7e6f9e412a8d19",
+      "lines": 98
+    },
+    {
+      "path": "supervisor",
+      "sha256": "70f1f0f9e20fe558d76857abbe2e391cd6812e3bb0f46060fbd211f4fc584245",
+      "lines": 9
+    },
+    {
+      "path": "supervisor.py",
+      "sha256": "1647c981f95cf79c13cce30137fcce5580df5685141ae7eeaa3b240a5133c1a6",
+      "lines": 10184
+    },
+    {
+      "path": "tests/fixtures/legacy-cutover/policy.json",
+      "sha256": "b74b817565f88feb7d5e80ab56c99a4a56135b10f215a878c0814d2217c34131",
+      "lines": 37
+    },
+    {
+      "path": "tests/fixtures/legacy-cutover/quota.json",
+      "sha256": "095f47b71f33395088213715415ebaf00474bb9216c8c25546693cfb627567b4",
+      "lines": 14
+    },
+    {
+      "path": "tests/fixtures/reference-policy.json",
+      "sha256": "38ce8f98ccc091fda56a80c791ff53daf4a0c4067c9c9fc9c65e495edfa1ffcd",
+      "lines": 291
+    },
+    {
+      "path": "tests/test_controlled_improvement.py",
+      "sha256": "6887dc645be588514b71db4600d734ac08f65abe5eff231b91ebc4478fe52f12",
+      "lines": 113,
+      "test_methods": [
+        "test_disabled_capability_allows_status_but_cannot_create_request",
+        "test_explicit_user_workflow_preserves_correction_lineage_and_bounds",
+        "test_excess_ticket_bound_escalates_without_splitting",
+        "test_self_development_stages_successor_but_has_no_activation_path"
+      ]
+    },
+    {
+      "path": "tests/test_documentation_governance.py",
+      "sha256": "94662ed4278d2f56a8a37e9ce7f9c8fc91889ba9f0c2977897d8e8bf4f101226",
+      "lines": 71,
+      "test_methods": [
+        "test_checked_manifest_passes",
+        "test_manifest_declares_one_pair_and_no_semantic_claim",
+        "test_stale_source_and_duplicate_pair_fail",
+        "test_missing_pair_and_broken_link_fail",
+        "test_semantic_claim_fails"
+      ]
+    },
+    {
+      "path": "tests/test_observed_quota_policy.py",
+      "sha256": "5a0b7d817205b064f5fda50da1bc4d551db73197f62f7d62e6fe3255cc13b55a",
+      "lines": 93,
+      "test_methods": [
+        "test_boundaries_medium_freshness_and_high_reuse_exhaustion",
+        "test_ttl_rate_signal_and_context_change_invalidate",
+        "test_consumption_is_idempotent_and_legacy_conversion_rolls_back"
+      ]
+    },
+    {
+      "path": "tests/test_policy_contract.py",
+      "sha256": "880593e2777f6239aad2eb4dc04822f0f02dace41c7bde03d24a4637d9df4e4e",
+      "lines": 126,
+      "test_methods": [
+        "test_capabilities_are_independent_and_intersect_host_and_repository",
+        "test_missing_or_malformed_host_values_fail_closed",
+        "test_repository_policy_cannot_elevate_an_absent_host_grant",
+        "test_v2_rejects_unknown_keys_and_contradictory_watchdog_ranges",
+        "test_legacy_dry_run_removes_forecast_without_preserving_it",
+        "test_host_push_target_rejects_credentials_and_legacy_grants_have_no_target",
+        "test_verified_push_target_requires_exact_branch_and_remote_urls"
+      ]
+    },
+    {
+      "path": "tests/test_supervisor.py",
+      "sha256": "f529c912e3fed380563b7b29f0b86916d7696ee69e111e6689727aa7c8da9ce3",
+      "lines": 5026,
+      "test_methods": [
+        "test_init_creates_lightweight_controlled_repository_scaffold",
+        "test_generic_verification_failure_resume_is_inert_until_explicit_recovery",
+        "test_generic_verification_recovery_audits_once_without_quota_model_or_check",
+        "test_generic_verification_recovery_rejects_configuration_drift_without_mutation",
+        "test_generic_verification_recovery_cannot_reconcile_mandatory_host_failure",
+        "test_terra_pass_verifies_and_commits",
+        "test_architecture_ambiguity_routes_to_sol_then_reruns_terra",
+        "test_sol_product_decision_required_enters_human_gate",
+        "test_recoverable_protected_scope_resume_progresses_to_architecture_quota_boundary",
+        "test_protected_scope_architecture_invocation_consumes_only_fresh_quota_at_model_start",
+        "test_protected_paths_stay_blocked_without_exact_architecture_authorization",
+        "test_architecture_approval_returns_through_scope_and_commit_lifecycle",
+        "test_architecture_rejection_routes_to_bounded_product_recovery",
+        "test_protected_scope_genuine_architecture_decision_enters_human_gate",
+        "test_stale_protected_scope_checkpoint_fails_closed_without_quota_or_model",
+        "test_malformed_protected_scope_checkpoint_fails_closed",
+        "test_non_protected_scope_block_exposes_no_fake_resume",
+        "test_required_documentation_impact_is_current_ticket_scope",
+        "test_protected_snapshot_recovery_reprocesses_exact_legacy_false_block_without_model_or_quota",
+        "test_protected_snapshot_recovery_rejects_changed_or_ambiguous_evidence_without_mutation",
+        "test_unknown_quota_blocks_invocation",
+        "test_low_five_hour_quota_blocks_invocation",
+        "test_low_weekly_quota_blocks_invocation",
+        "test_cli_requires_both_observed_windows_and_records_no_reset_time",
+        "test_cli_rejects_removed_reset_time_inputs",
+        "test_omitted_quota_fields_are_null_not_copied_from_prior_observation",
+        "test_supplied_optional_weekly_quota_still_uses_policy_reserve",
+        "test_five_hour_only_observation_still_uses_hard_reserve",
+        "test_malformed_supplied_optional_quota_fields_fail_closed",
+        "test_unknown_required_five_hour_dimension_fails_closed",
+        "test_fresh_observation_is_consumed_before_first_model_call_and_blocks_second",
+        "test_failed_invocation_requires_new_observation_before_retry",
+        "test_t29_manual_observation_cannot_authorize_environment_recovery",
+        "test_one_completed_recovery_does_not_invoke_diagnostic_before_next_terra",
+        "test_repeated_same_ticket_recovery_requests_diagnostic_sol",
+        "test_t29_style_repeated_recovery_qualifies_deterministically",
+        "test_fresh_ticket_activation_resets_pre_prerequisite_recovery_window",
+        "test_t13_environment_report_has_deterministic_host_handoff",
+        "test_diagnostic_consumes_exactly_one_fresh_quota_observation",
+        "test_product_fix_requires_another_fresh_observation_before_terra",
+        "test_host_verification_classification_runs_deterministic_checks_not_terra",
+        "test_f04_failed_host_diagnosis_resumes_into_configured_verification_without_quota",
+        "test_unsafe_diagnostic_failed_has_no_fake_resume",
+        "test_prior_host_verification_same_product_snapshot_cannot_repeat",
+        "test_product_fix_and_changed_snapshot_permit_deterministic_host_reverification",
+        "test_malformed_repaired_snapshot_evidence_fails_closed",
+        "test_contradictory_repaired_snapshot_evidence_fails_closed",
+        "test_stale_repaired_snapshot_evidence_fails_closed",
+        "test_diagnostic_architecture_and_human_classifications_use_safe_paths",
+        "test_preserved_same_ticket_checkpoint_allows_architecture_invocation",
+        "test_preserved_architecture_commit_stages_only_architecture_delta",
+        "test_architecture_inserted_prerequisite_replaces_same_ticket_recovery",
+        "test_repaired_diagnostic_schedules_missing_prerequisite_with_preserved_product",
+        "test_shared_current_ticket_path_is_not_rejected_as_later_owned",
+        "test_preserved_architecture_entry_blocks_modified_product_without_consuming_quota",
+        "test_preserved_architecture_entry_blocks_additional_product_without_consuming_quota",
+        "test_preserved_architecture_entry_blocks_cross_ticket_checkpoint",
+        "test_git_blocked_clean_start_rejection_resumes_valid_architecture_checkpoint",
+        "test_report_invalid_resume_enters_report_only_recovery_without_consuming_quota",
+        "test_malformed_replacement_report_remains_report_invalid",
+        "test_contradictory_replacement_report_remains_report_invalid",
+        "test_valid_replacement_report_continues_existing_architecture_pipeline",
+        "test_report_recovery_blocks_changed_architecture_delta_before_invocation",
+        "test_unrelated_report_invalid_fails_closed_with_truthful_instruction",
+        "test_malformed_unknown_or_ambiguous_diagnostic_fails_closed",
+        "test_pending_diagnostic_survives_restart_and_periodic_checkpoint",
+        "test_completed_diagnostic_artifacts_reconcile_after_restart",
+        "test_supervisor_bug_repair_cannot_modify_product_paths",
+        "test_product_fingerprint_mismatch_before_repair_fails_without_consuming_new_quota",
+        "test_valid_supervisor_repair_commits_only_supervisor_files_and_reclassifies",
+        "test_external_supervisor_repair_commits_engine_not_controlled_project",
+        "test_post_repair_unmatched_environment_block_routes_to_ticket_verification",
+        "test_post_repair_completion_cannot_bypass_configured_host_check",
+        "test_post_repair_completion_accepts_displaced_active_run_through_validated_lineage",
+        "test_diagnostic_evidence_keeps_active_run_when_newer_runs_fill_bound",
+        "test_closed_pilot_gate_cannot_be_bypassed_by_diagnostic_path",
+        "test_consumed_observation_remains_consumed_after_restart",
+        "test_periodic_checkpoint_release_does_not_revive_consumed_observation",
+        "test_unconsumed_observation_still_expires_by_ttl",
+        "test_new_below_reserve_observation_does_not_authorize_retry",
+        "test_missing_or_ambiguous_consumption_state_fails_closed",
+        "test_observation_has_no_reset_time_fields",
+        "test_rate_limit_failure_is_not_retried",
+        "test_failed_verification_prevents_commit",
+        "test_dirty_unexpected_git_state_blocks",
+        "test_resume_reconciles_commit_without_duplicate_invocation_or_commit",
+        "test_final_ticket_completes_one_immutable_epoch_without_inferring_a_ticket",
+        "test_final_commit_reconciliation_is_idempotent_after_state_write_interruption",
+        "test_legacy_final_state_migration_fails_closed_with_report",
+        "test_explicit_v6_to_v7_state_migration_is_dry_run_safe_idempotent_and_rollbackable",
+        "test_pilot_a_milestone_stops_before_t13",
+        "test_stale_milestone_gate_cannot_release_past_new_incomplete_tickets",
+        "test_reconcile_plan_gate_preserves_history_quota_and_checkpoint_counters",
+        "test_external_architecture_adoption_requires_explicit_release",
+        "test_external_architecture_adoption_rejects_product_paths",
+        "test_external_architecture_adoption_rejects_noninserting_plan",
+        "test_valid_periodic_checkpoint_enters_bounded_plan_reconciliation",
+        "test_periodic_plan_reconciliation_commits_and_adopts_inserted_next_ticket",
+        "test_periodic_plan_reconciliation_rejects_stale_or_nonquiescent_checkpoint",
+        "test_periodic_plan_reconciliation_rejects_noninserting_architecture_change",
+        "test_ordinary_periodic_release_with_unchanged_plan_remains_ready",
+        "test_post_implementation_periodic_resume_runs_verification_scope_and_commit_without_terra",
+        "test_post_implementation_periodic_resume_cannot_bypass_failed_verification",
+        "test_stale_post_implementation_periodic_checkpoint_has_no_fake_resume",
+        "test_jsonl_usage_parsing",
+        "test_malformed_structured_report_fails_closed",
+        "test_checked_in_output_schema_uses_supported_codex_subset",
+        "test_schema_compatibility_check_rejects_known_unsupported_keywords",
+        "test_invalid_codex_schema_fails_before_model_runner_is_called",
+        "test_report_validation_enforces_invariants_not_in_output_schema",
+        "test_missing_structured_report_fails_closed",
+        "test_schema_rejection_without_workspace_changes_is_explicitly_retryable",
+        "test_failed_invocation_with_changes_is_not_retried",
+        "test_blocked_implementation_resume_enters_existing_recovery_without_reusing_quota",
+        "test_evidence_check_runs_without_model_recovery",
+        "test_configured_owner_evidence_uses_human_gate_and_bounded_release",
+        "test_owner_evidence_gate_rejects_non_record_mutation",
+        "test_repeated_blocked_implementation_recoveries_trigger_existing_diagnostic",
+        "test_blocked_implementation_recovery_fails_closed_when_checkpoint_changed",
+        "test_blocked_implementation_recovery_rejects_contradictory_state",
+        "test_environment_block_recovers_preserved_untracked_work_without_architecture_review",
+        "test_environment_block_with_architecture_flag_still_routes_to_architecture",
+        "test_valid_environment_block_hands_off_to_host_verification_and_commits",
+        "test_environment_block_without_matching_host_capability_recovers_model",
+        "test_unmatched_environment_recovery_does_not_invent_mandatory_host_check",
+        "test_product_blocker_cannot_use_host_handoff",
+        "test_skipped_host_verification_fails_closed",
+        "test_unavailable_host_verification_evidence_fails_closed",
+        "test_failed_host_verification_enters_verification_failed",
+        "test_verification_failure_recovery_allows_unchanged_content_after_supervisor_commit",
+        "test_verification_failure_recovery_blocks_modified_tracked_content",
+        "test_verification_failure_recovery_blocks_modified_untracked_content",
+        "test_verification_failure_recovery_blocks_added_product_path",
+        "test_verification_failure_recovery_blocks_removed_product_path",
+        "test_recovered_host_failure_invokes_model_before_any_verification_retry",
+        "test_recorded_t28_eperm_report_does_not_repeat_model_invocation",
+        "test_periodic_recovery_checkpoint_reconciles_to_verification_without_model",
+        "test_ticket_specific_verification_commands_run_after_implementation_pass",
+        "test_unittest_evidence_accepts_current_multiline_warning_shape",
+        "test_unittest_evidence_accepts_same_line_ok",
+        "test_unittest_evidence_fails_closed_for_missing_or_bad_required_test",
+        "test_unittest_evidence_requires_successful_suite_completion",
+        "test_unittest_evidence_nonzero_exit_fails_even_with_successful_output",
+        "test_exit_zero_false_negative_log_can_be_reconciled_without_rerun",
+        "test_periodic_gate_after_ticket_threshold",
+        "test_periodic_gate_after_runtime_threshold",
+        "test_periodic_gate_after_model_invocation_threshold",
+        "test_periodic_threshold_does_not_interrupt_running_invocation",
+        "test_watchdog_warning_does_not_terminate",
+        "test_watchdog_timeout_produces_resumable_interrupted_state",
+        "test_ctrl_c_during_model_invocation_preserves_partial_tree",
+        "test_ctrl_c_during_verification_preserves_partial_tree",
+        "test_resume_after_incomplete_model_invocation_uses_recovery_prompt",
+        "test_resume_after_completed_invocation_before_state_write",
+        "test_resume_after_verification_interruption_does_not_repeat_model",
+        "test_partial_working_tree_is_preserved_after_interruption",
+        "test_human_quota_checkpoint_states_survive_restart",
+        "test_watchdog_timeout_leaves_no_child_process",
+        "test_dashboard_with_known_quota",
+        "test_dashboard_with_unknown_quota",
+        "test_quota_waiting_dashboard_uses_pending_diagnostic_role",
+        "test_dashboard_has_pipeline_current_and_next_sections",
+        "test_completed_failed_run_dashboard_uses_persisted_duration",
+        "test_active_run_dashboard_uses_live_elapsed_time",
+        "test_dashboard_has_no_quota_forecast",
+        "test_timing_history_does_not_create_a_quota_forecast",
+        "test_malformed_timing_history_fails_safely",
+        "test_immutable_binding_requires_host_local_lease_and_stale_host_cannot_write",
+        "test_binding_rejects_incompatible_ranges_before_state_write",
+        "test_exact_later_owned_scope_recovery_hands_off_rechecks_and_commits",
+        "test_later_owned_scope_recovery_rolls_back_before_resume",
+        "test_later_owned_scope_recovery_rejects_a_changed_checkpoint",
+        "test_qualified_cutover_is_opt_in_archives_exact_predecessor_and_rolls_back",
+        "test_active_and_dirty_unsupported_sources_are_rejected_without_writes",
+        "test_exact_clean_legacy_milestone_without_historical_fingerprint_is_supported",
+        "test_accepted_cutover_closes_sentinel_and_preserves_archive",
+        "test_cutover_acceptance_rejects_nonfinal_or_inexact_state",
+        "test_cold_start_requires_exact_two_version_approval_before_plan",
+        "test_corrections_preserve_lineage_and_invalidate_stale_architecture_approval",
+        "test_later_architecture_artifact_edit_invalidates_plan_readiness",
+        "test_backlog_requires_exact_review_and_approval_before_a_new_epoch",
+        "test_backlog_source_change_fails_closed_and_cannot_advance_the_completed_epoch",
+        "test_insertion_plan_amendment_appends_successor_epoch_and_rolls_back",
+        "test_scenario_a_inventory_is_read_only_and_returns_finite_external_checklist",
+        "test_both_scenarios_produce_deterministic_approved_indexes",
+        "test_changed_source_and_existing_control_both_fail_closed"
+      ]
+    }
+  ]
+}
