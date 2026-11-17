@@ -1,11 +1,17 @@
 # Tasks
 
-Delivery scope (2026-11-18): the user requested inventory/comparison through the
-candidate operating model, in English and Russian, stopping before the incremental
-migration roadmap. Reports: `docs/architecture/as-is-openspec-inventory.md` and
-`docs/architecture/as-is-openspec-inventory.ru.md`; structural evidence:
-`docs/architecture/as-is-openspec-evidence.json`. Groups 5 and the complete-assessment
-gate 6.1 remain pending; this delivery does not complete or archive the change.
+Initial delivery (2026-11-18): inventory/comparison and the candidate operating
+model were completed in English and Russian, stopping before the roadmap. Reports:
+`docs/architecture/as-is-openspec-inventory.md` and `.ru.md`; structural evidence:
+`docs/architecture/as-is-openspec-evidence.json`. Their task references describe that
+original delivery. Completed tasks 1–4.4 remain completed assessment work, not proof
+that the target architecture below has been designed.
+
+Scope update (2026-11-18): save the Harness Engineering analysis in EN/RU and synthesize
+all source material into a coherent target architecture **before** roadmap authoring.
+Group 5 is new architecture work; former roadmap group 5 is now group 6 and former
+complete-assessment gate 6.1 is now 7.1. Groups 5–7 remain pending. This update does
+not implement the architecture, run benchmarks, complete or archive the change.
 
 ## 1. Establish the evidence baseline
 
@@ -32,18 +38,33 @@ gate 6.1 remain pending; this delivery does not complete or archive the change.
 - [x] 4.3 Define the architecture and user-escalation decision matrix using reversibility, blast radius, public/data/trust-boundary impact, operational cost, requirement ambiguity, and trade-off materiality; verify representative decisions have an unambiguous autonomous, architecture-review, or user-decision route.
 - [x] 4.4 Define quota-economy principles and measurements based on deterministic preflight, OpenSpec context reuse, bounded calls, no unchanged retries, and risk-triggered reviews; verify proposed metrics can be collected without quota prediction, secret exposure, or model calls solely for bookkeeping.
 
-## 5. Produce an incremental evolution roadmap
+- [x] 4.5 Save the complete Harness Engineering analysis in `docs/architecture/harness-engineering-analysis.md` and `.ru.md`, including PDF identity/page references, project evidence, useful mechanisms, limitations, rewrite alternatives and the proposed bounded evaluation; verify local links and EN/RU agreement, distinguish recommendations from selected architecture, and do not copy the PDF or private runtime data.
 
-- [ ] 5.1 Break the target into small dependency-ordered future OpenSpec changes, beginning with read-only integration and one bounded end-to-end task before removing parallel planning machinery; verify every slice has an observable outcome, prerequisites, preserved invariants, rollback point, and explicit non-goals.
-- [ ] 5.2 Add deletion criteria for legacy states, commands, schemas, prompts, compatibility code, and historical documentation; verify no removal is recommended without replacement coverage, retained recovery evidence where still required, and a test or observation proving the old path is no longer authoritative.
-- [ ] 5.3 Add a concise user-review checklist covering the proposed ownership boundary, acceptable startup assurance defaults, architecture autonomy, mandatory escalation points, and migration priorities; verify unresolved items are clearly separated from recommendations and block only the future slice they affect.
+## 5. Synthesize and validate the target architecture before the roadmap
 
-## 6. Validate the complete assessment
+- [ ] 5.1 Create `docs/architecture/openspec-supervisor-target-architecture.md` and `.ru.md` with a source-to-decision matrix covering inventory C1–C12, installed OpenSpec evidence, the book analysis, current operator contracts/tests, and reconciled original/2.0/2.1 intent; verify each material idea/control has an adopt/adapt/defer/reject disposition, evidence, rationale, owner and invariant impact, and contradictions are explicitly reconciled.
+- [ ] 5.2 Compare adapting the controller, extracting a thin executor and building a replacement core/full rewrite; select and justify an architecture using simplicity, operational/implementation cost, quota efficiency, testability and preservation of required guarantees; verify every alternative has concrete tradeoffs and the selected approach names evidence that would invalidate it, without using code size or book scores as sufficient justification.
+- [ ] 5.3 Define the selected components, interfaces/data flow, single sources of truth, minimal lifecycle versus blocked reasons, durable state/receipt ownership and stable task identity under edits/reorder/archive; verify each C1–C12 responsibility is mapped to an owner/interface and retained/replaced controls have explicit evidence requirements, with no parallel editable plan or unexplained framework/service.
+- [ ] 5.4 Specify task-wide durable budgets across all roles/restarts, resource accounting/enforcement limits, progress/stagnation and changed repair hypotheses, context manifests/versioned inputs/invalidation, mandatory acceptance versus authorized deferral/new work, and the user-selected Detail + Pragmatic pair for both spec and code review, with independent read-only contexts, explicit triggers/fast paths, evidence-bearing findings, per-finding dispositions, deterministic arbitration and accounting of both roles; verify representative success, unchanged-failure, exhausted-budget, stale-review, critic disagreement, unsupported findings, optional-polish and failed-mandatory-check trajectories have unambiguous outcomes without quota forecasting or score-only acceptance.
+- [ ] 5.5 Specify enforceable role authority across tools/filesystem/shell/subprocesses, behavior when enforcement is unavailable, ordinary versus protected acceptance tests, and preservation of single writer, immutable engine identity where required, quota/checkpoint/Git/audit/recovery invariants; verify interruption and repeated-resume trajectories around consumption, invocation, report, verification, commit and push cannot silently gain authority, duplicate effects or accept file existence as completion.
+- [ ] 5.6 Define a bounded end-to-end OpenSpec-task evaluation with normal completion, interruption, failed verification and repeated resume, mapping existing regression/fault tests and missing acceptance evidence to required invariants, and define spec/code Detail + Pragmatic review cases for blockers, optional polish, unsupported findings, disagreement, input changes and exhausted budget; verify fixtures, version/input identities, resource limits, baseline, outcome/call/time/intervention metrics and decision criteria are reproducible on paper, unknown economics stay explicit, and implementing/running the experiment is deferred to a separate scoped change.
+- [ ] 5.7 Validate the complete target architecture for source coverage, ownership/interface consistency, simplicity, invariant/evaluation coverage, Detail + Pragmatic contracts for both spec and code, and EN/RU agreement; record the reviewed document revision/content identity and decision provenance, resolving all architecture-blocking choices through the existing autonomous/architecture/user decision model; verify no roadmap content is authored until this readiness record exists and no material user-owned decision is inferred from silence.
 
-- [ ] 6.1 Cross-check the assessment against the proposal and design, run `python3 scripts/check_documentation.py`, `git diff --check`, and `openspec validate inventory-as-is-for-openspec-evolution --strict --no-interactive`, and verify all checks pass or every pre-existing/unrelated failure is recorded with evidence.
+## 6. Produce an architecture-derived incremental evolution roadmap
+
+Prerequisite: tasks 5.1–5.7 are complete, with a selected architecture and its readiness
+record. Roadmap authoring must not make unresolved architectural decisions implicitly.
+
+- [ ] 6.1 Derive small dependency-ordered future OpenSpec changes from the selected target architecture, linking each slice to its architectural contracts and including the bounded evaluation before retirement of parallel planning machinery; verify every slice has an observable outcome, prerequisites, preserved invariants, rollback point and non-goals, and even a replacement core uses an incremental transition rather than an assumed big-bang cutover.
+- [ ] 6.2 Add architecture-backed deletion criteria for legacy states, commands, schemas, prompts, compatibility code and historical documentation; verify no removal is recommended without replacement coverage, retained recovery evidence where required, and a test or observation proving the old path is no longer authoritative.
+- [ ] 6.3 Add a concise user-review checklist covering the selected architecture/ownership, startup assurance defaults, architecture autonomy, mandatory escalation and migration priorities; verify unresolved evidence items are distinct from decisions, block only affected future slices, and do not conceal an unfinished architectural choice.
+
+## 7. Validate the complete assessment, architecture and roadmap
+
+- [ ] 7.1 Cross-check the inventory, bilingual book analysis, bilingual target architecture and architecture-derived roadmap against the proposal/design and source-to-decision record; verify local links, EN/RU decision/limit agreement and readiness-before-roadmap evidence, run `python3 scripts/check_documentation.py`, `git diff --check` and `openspec validate inventory-as-is-for-openspec-evolution --strict --no-interactive`, and verify all checks pass or every pre-existing/unrelated failure is recorded with evidence.
 
 ## Workflow follow-up
 
-- Review and explicitly accept or amend the inventory's ownership boundary and roadmap before opening an implementation change.
-- Create separate OpenSpec changes for accepted migration slices; do not implement the roadmap from this inventory change.
-- Archive this change only after the assessment is accepted and its follow-up changes are traceable.
+- Review the selected architecture and roadmap before opening implementation changes; user-owned decisions require explicit authority, not approval inferred from artifact readiness.
+- Create separate OpenSpec changes for accepted implementation/evaluation slices; do not implement or benchmark the target architecture from this documentation change.
+- Archive this change only after the assessment/architecture/roadmap are accepted and follow-up changes are traceable.

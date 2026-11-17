@@ -14,6 +14,11 @@ The dated AS-IS inventory and OpenSpec comparison are available in
 [English](docs/architecture/as-is-openspec-inventory.md) and
 [Russian](docs/architecture/as-is-openspec-inventory.ru.md). They assess the current
 controller and a candidate operating model; the migration roadmap is still pending.
+The subsequent Harness Engineering analysis is saved in
+[English](docs/architecture/harness-engineering-analysis.md) and
+[Russian](docs/architecture/harness-engineering-analysis.ru.md). The active
+[OpenSpec change](openspec/changes/inventory-as-is-for-openspec-evolution/proposal.md)
+now requires a coherent target architecture before roadmap construction.
 
 ## Requirements
 
